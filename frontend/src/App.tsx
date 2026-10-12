@@ -443,8 +443,8 @@ function App() {
   return (
     <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <header className="session-bar">
-        <nav className="header-breadcrumb" aria-label="Current page"><span>PLUMBLINE</span><ChevronRight size={14} /><strong>{page === "import" ? "CONTRACT" : page.toUpperCase()}</strong></nav>
-        <h1 className="header-page-title">{pageTitles[page]}</h1>
+        <div className="header-brand">PLUMBLINE</div>
+        <nav className="header-breadcrumb" aria-label="Current page"><span>{page === "import" ? "CONTRACT" : page.toUpperCase()}</span><ChevronRight size={14} /><strong>{pageTitles[page]}</strong></nav>
         <div className="session-right"><button className="button button-primary header-ai" onClick={() => setPage("mcp")}><Braces size={15} />Use with AI client</button></div>
       </header>
 
