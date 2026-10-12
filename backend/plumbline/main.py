@@ -27,7 +27,7 @@ RUNS_DIR = Path("runs")
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    if SPEC_PATH.is_file():
+    if getattr(application.state, "api_model", None) is None and SPEC_PATH.is_file():
         try:
             application.state.api_model = parse_openapi(SPEC_PATH.read_text(encoding="utf-8"))
         except (OSError, SpecValidationError):

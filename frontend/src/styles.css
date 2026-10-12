@@ -268,13 +268,39 @@ input, select, textarea { color: var(--text); }
 .run-scope-heading strong { font-size: 13px; font-weight: 580; }
 .run-scope-heading span { color: var(--muted); font-size: 12px; }
 .scope-mode { flex: 0 0 auto; }
-.scope-group-list { display: grid; max-height: 190px; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 7px; overflow: auto; margin-top: 12px; }
-.scope-group { display: flex; min-width: 0; align-items: center; gap: 9px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--soft); cursor: pointer; }
-.scope-group:has(input:checked) { border-color: #435476; background: var(--accent-soft); }
-.scope-group input { width: 15px; height: 15px; flex: 0 0 auto; margin: 0; accent-color: var(--accent); }
-.scope-group > span { display: grid; min-width: 0; gap: 3px; }
-.scope-group strong { overflow: hidden; font-size: 12px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
-.scope-group small { color: var(--muted); font-size: 11px; }
+.scope-picker { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 300px); gap: 12px; margin-top: 14px; }
+.scope-browser, .scope-selection { min-width: 0; border: 1px solid var(--border); border-radius: 10px; background: var(--soft); }
+.scope-browser { overflow: hidden; }
+.scope-browser-toolbar { display: flex; min-height: 52px; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border-bottom: 1px solid var(--border-low); }
+.scope-browser-toolbar > span { flex: 0 0 auto; color: var(--muted); font: 11px var(--mono); }
+.scope-search { display: flex; width: min(100%, 360px); min-height: 34px; align-items: center; gap: 8px; padding: 0 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); color: var(--muted); }
+.scope-search input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 12px; }
+.scope-search .icon-button { width: 24px; height: 24px; }
+.scope-bulk-actions { display: flex; align-items: center; gap: 16px; padding: 8px 12px; border-bottom: 1px solid var(--border-low); }
+.text-button { padding: 0; border: 0; background: transparent; color: var(--accent); font-size: 11px; cursor: pointer; }
+.text-button:disabled { color: var(--faint); cursor: default; }
+.scope-group-list { max-height: 240px; overflow: auto; padding: 4px 10px; }
+.scope-group { display: grid; min-height: 38px; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 0 6px; border-bottom: 1px solid var(--border-low); cursor: pointer; }
+.scope-group:last-child { border-bottom: 0; }
+.scope-group:has(input:checked) { color: var(--text); }
+.scope-group input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
+.scope-group-name { overflow: hidden; color: var(--subtle); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.scope-group:has(input:checked) .scope-group-name { color: var(--text); }
+.scope-group small { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.scope-no-results { padding: 24px 8px; color: var(--muted); font-size: 12px; text-align: center; }
+.scope-selection { display: flex; min-height: 0; flex-direction: column; }
+.scope-selection-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 12px; border-bottom: 1px solid var(--border-low); }
+.scope-selection-heading > div, .scope-selected-item > div { display: grid; min-width: 0; gap: 4px; }
+.scope-selection-heading strong { font-size: 12px; font-weight: 560; }
+.scope-selection-heading span:not(.scope-selection-count), .scope-selected-item span { color: var(--muted); font-size: 11px; }
+.scope-selection-count { color: var(--subtle); font: 11px var(--mono); }
+.scope-selected-list { max-height: 240px; overflow: auto; padding: 4px 8px; }
+.scope-selected-item { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 2px 3px 5px; border-bottom: 1px solid var(--border-low); }
+.scope-selected-item:last-child { border-bottom: 0; }
+.scope-selected-item strong { overflow: hidden; color: var(--subtle); font-size: 11px; font-weight: 520; text-overflow: ellipsis; white-space: nowrap; }
+.scope-selected-item .icon-button { width: 26px; height: 26px; }
+.scope-more-selected { margin: 8px 4px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.scope-selection-empty { margin: auto; padding: 20px 16px; color: var(--muted); font-size: 12px; line-height: 1.5; text-align: center; }
 .scope-empty, .schema-empty { margin: 10px 0 0; color: var(--muted); font-size: 12px; }
 .contract-structure { border-bottom: 1px solid var(--border-low); }
 .contract-structure > summary { display: flex; min-height: 42px; align-items: center; gap: 8px; color: var(--subtle); font-size: 12px; cursor: pointer; list-style: none; }
@@ -292,8 +318,20 @@ input, select, textarea { color: var(--text); }
 .mutation-inline { margin-left: auto; padding: 6px 9px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px !important; }
 .mutation-inline.on { border-color: #74413e; color: var(--fail); }
 .mutation-inline.off { color: var(--subtle); }
-.run-options { max-width: 680px; padding: 5px 0 12px; }
-.run-options .field-label > span { margin-left: auto; color: var(--muted); }
+.run-options { border-bottom: 1px solid var(--border-low); }
+.run-options > summary { display: flex; min-height: 42px; align-items: center; gap: 8px; color: var(--subtle); font-size: 12px; cursor: pointer; list-style: none; }
+.run-options > summary::-webkit-details-marker { display: none; }
+.run-options > summary::before { content: "▸"; color: var(--muted); }
+.run-options[open] > summary::before { transform: rotate(90deg); }
+.run-options > summary small { margin-left: auto; color: var(--muted); font-size: 11px; }
+.run-options .field-label { margin-top: 4px; }
+.run-options > p { margin: 7px 0 12px; color: var(--muted); font-size: 11px; }
+.fixtures-options[open] { padding-bottom: 12px; }
+.discovery-toggle { display: flex; align-items: flex-start; gap: 9px; margin-top: 10px; cursor: pointer; }
+.discovery-toggle input { width: 15px; height: 15px; flex: 0 0 auto; margin: 1px 0 0; accent-color: var(--accent); }
+.discovery-toggle span { display: grid; gap: 4px; }
+.discovery-toggle strong { color: var(--subtle); font-size: 12px; font-weight: 520; }
+.discovery-toggle small { color: var(--muted); font-size: 11px; }
 .roles-editor { min-height: 72px; }
 .run-config-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border-low); }
 .muted { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
@@ -327,6 +365,8 @@ input, select, textarea { color: var(--text); }
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .section-heading h2, .section-heading h3 { margin: 5px 0 0; color: var(--text); font-size: 16px; font-weight: 590; }
 .attention-count { color: var(--muted); font: 12px var(--mono); }
+.fixture-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 12px; padding: 10px 12px; border: 1px solid #62533b; border-radius: 8px; background: #211d16; color: var(--warn); font-size: 12px; }
+.fixture-summary a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .cluster-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin-top: 13px; }
 .cluster-card { min-width: 0; padding: 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--raised); color: var(--text); text-align: left; cursor: pointer; }
 .cluster-card:hover, .cluster-card.selected { border-color: #74413e; background: #282025; }
@@ -475,6 +515,13 @@ input, select, textarea { color: var(--text); }
   .endpoint-browser { position: static; min-height: 300px; max-height: 400px; }
   .overview-card:last-child { grid-column: auto; }
   .cluster-grid { grid-template-columns: 1fr; }
+  .run-scope-heading { align-items: flex-start; flex-direction: column; }
+  .scope-mode { width: 100%; }
+  .scope-picker { grid-template-columns: 1fr; }
+  .scope-browser-toolbar { align-items: stretch; flex-direction: column; }
+  .scope-search { width: 100%; }
+  .scope-selection { min-height: 120px; }
+  .scope-selected-list { max-height: 180px; }
   .settings-layout { grid-template-columns: 1fr; }
   .mutation-settings-card { grid-column: auto; }
   .verdict-row { align-items: flex-start; flex-direction: column; }

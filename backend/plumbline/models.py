@@ -100,6 +100,8 @@ class RunConfig(BaseModel):
     base_url: AnyHttpUrl
     auth: AuthConfig | None = None
     roles: list[RoleConfig] = Field(default_factory=list)
+    fixtures: dict[str, str] = Field(default_factory=dict)
+    discover_fixtures: bool = False
     allow_mutations: bool = False
     rate_limit: RateLimitConfig | None = None
     operation_ids: list[str] | None = None

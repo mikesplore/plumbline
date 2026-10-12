@@ -1,12 +1,14 @@
 import json
+from datetime import datetime, timezone
 
 import httpx
 import pytest
 
 from demo_api.main import app as demo_app, reset_demo_state
+from plumbline.analysis import build_run_summary
 from plumbline.checks import auth, concurrency, conformance, errors, ratelimit, rbac, validation
 from plumbline.checks.common import request_operation
-from plumbline.models import AuthConfig, RateLimitConfig, RoleConfig, RunConfig
+from plumbline.models import AuthConfig, RateLimitConfig, RoleConfig, RunConfig, RunReport
 from plumbline.parser import parse_openapi
 from plumbline.runner import run_checks
 
@@ -40,6 +42,63 @@ async def test_conformance_checks_status_and_response_schema():
     assert by_operation["list_items"].status == "pass"
     assert by_operation["get_item"].status == "fail"
     assert "number" in by_operation["get_item"].observed or "string" in by_operation["get_item"].observed
+
+
+@pytest.mark.asyncio
+async def test_generated_id_404_is_inconclusive_but_real_id_schema_mismatch_fails():
+    reset_demo_state()
+    from demo_api.main import _items
+
+    _items.clear()
+    model = demo_model()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=demo_app), base_url="http://demo") as client:
+        random_id_findings = await conformance.run(model, config(), client)
+    missing_item = next(item for item in random_id_findings if item.operation_id == "get_item")
+    assert missing_item.status == "inconclusive"
+    assert missing_item.observed == "Generated ID not found on target. Provide a fixture."
+    assert missing_item.response.status == 404
+    report = RunReport(
+        run_id="missing-fixture", started_at=datetime.now(timezone.utc), base_url="http://demo",
+        findings=[missing_item], summary={"pass": 0, "fail": 0, "inconclusive": 1},
+    )
+    assert build_run_summary(report, model)["missing_fixture_inconclusive"] == 1
+
+    real_id_findings = await check_with_demo(conformance.run, config(fixtures={"id": "1"}))
+    real_item = next(item for item in real_id_findings if item.operation_id == "get_item")
+    assert real_item.status == "fail"
+    assert real_item.response.status == 200
+    assert "number" in real_item.observed or "string" in real_item.observed
+
+
+@pytest.mark.asyncio
+async def test_documented_not_found_status_is_a_pass():
+    model = demo_model()
+    detail = next(item for item in model.operations if item.id == "get_item")
+    detail.responses["404"] = None
+    reset_demo_state()
+    run_config = config(fixtures={"id": "999"})
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=demo_app), base_url="http://demo") as client:
+        findings = await conformance.run(model, run_config, client)
+    missing_item = next(item for item in findings if item.operation_id == "get_item")
+
+    assert missing_item.status == "pass"
+    assert missing_item.response.status == 404
+
+    report = RunReport(
+        run_id="documented-404", started_at=datetime.now(timezone.utc), base_url="http://demo",
+        findings=findings, summary={"pass": len(findings), "fail": 0, "inconclusive": 0},
+    )
+    assert build_run_summary(report, model)["missing_fixture_inconclusive"] == 0
+
+
+@pytest.mark.asyncio
+async def test_fixture_discovery_uses_first_list_item_for_matching_detail_operation():
+    findings = await check_with_demo(conformance.run, config(discover_fixtures=True))
+    item = next(item for item in findings if item.operation_id == "get_item")
+
+    assert item.status == "fail"
+    assert item.response.status == 200
+    assert item.request.url.endswith("/items/1")
 
 
 @pytest.mark.asyncio

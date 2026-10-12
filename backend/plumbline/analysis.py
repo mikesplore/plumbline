@@ -28,6 +28,11 @@ def build_run_summary(report: RunReport, api_model: ApiModel | None = None) -> d
     failures_by_check = Counter(
         finding.check for finding in report.findings if finding.status == "fail"
     )
+    missing_fixture_inconclusive = sum(
+        finding.status == "inconclusive"
+        and finding.observed == "Generated ID not found on target. Provide a fixture."
+        for finding in report.findings
+    )
 
     grouped: dict[str, list[Finding]] = defaultdict(list)
     for finding in report.findings:
@@ -80,6 +85,7 @@ def build_run_summary(report: RunReport, api_model: ApiModel | None = None) -> d
         "operation_count": operation_count,
         "counts": counts,
         "severity_status": matrix,
+        "missing_fixture_inconclusive": missing_fixture_inconclusive,
         "failures_by_check": [
             {"check": check, "count": count}
             for check, count in sorted(failures_by_check.items(), key=lambda item: (-item[1], item[0]))

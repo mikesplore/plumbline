@@ -39,14 +39,19 @@ def sample_value(schema: dict[str, Any] | None) -> Any:
     return {"string": "example", "integer": 1, "number": 1.0, "boolean": True}.get(value_type)
 
 
-def path_and_params(operation: Operation) -> tuple[str, dict[str, Any], dict[str, str]]:
+def path_and_params(
+    operation: Operation,
+    fixtures: dict[str, str] | None = None,
+) -> tuple[str, dict[str, Any], dict[str, str]]:
     path = operation.path
     query: dict[str, Any] = {}
     headers: dict[str, str] = {}
+    fixtures = fixtures or {}
     for parameter in operation.parameters:
         name = parameter.get("name")
         location = parameter.get("in")
-        value = sample_value(parameter.get("schema", {}))
+        generated = sample_value(parameter.get("schema", {}))
+        value = fixtures.get(name, generated) if location == "path" else generated
         if location == "path" and name:
             path = path.replace("{" + name + "}", quote(str(value), safe=""))
         elif location == "query" and name:
@@ -63,6 +68,7 @@ class Observation:
     text: str
     request: RequestEvidence
     response: ResponseEvidence
+    generated_path_parameters: list[str]
 
 
 async def request_operation(
@@ -75,8 +81,17 @@ async def request_operation(
     auth_mode: str = "configured",
     body: Any = NO_BODY,
     query_params: dict[str, Any] | None = None,
+    fixtures: dict[str, str] | None = None,
 ) -> Observation:
-    path, params, headers = path_and_params(operation)
+    fixtures = fixtures if fixtures is not None else config.fixtures
+    path, params, headers = path_and_params(operation, fixtures)
+    generated_path_parameters = [
+        str(parameter["name"])
+        for parameter in operation.parameters
+        if parameter.get("in") == "path"
+        and parameter.get("name")
+        and parameter["name"] not in fixtures
+    ]
     base = str(config.base_url).rstrip("/")
     url = f"{base}/{path.lstrip('/')}"
     auth = config.auth
@@ -125,6 +140,7 @@ async def request_operation(
                 body_snippet=text[:1000],
                 elapsed_ms=response.elapsed.total_seconds() * 1000,
             ),
+            generated_path_parameters=generated_path_parameters,
         )
     except httpx.RequestError as exc:
         return Observation(
@@ -133,6 +149,7 @@ async def request_operation(
             text=str(exc),
             request=request_evidence,
             response=ResponseEvidence(body_snippet=str(exc)[:1000]),
+            generated_path_parameters=generated_path_parameters,
         )
 
 

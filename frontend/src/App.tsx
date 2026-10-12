@@ -24,6 +24,7 @@ type Finding = {
 type RunReport = { run_id: string; base_url: string; started_at: string; findings: Finding[]; summary: Record<string, number> };
 type RunSummary = {
   run_id: string; verdict: string; operation_count: number; counts: Record<string, number>;
+  missing_fixture_inconclusive?: number;
   severity_status: Record<string, Record<string, number>>;
   failures_by_check: { check: string; count: number }[];
   clusters: { cluster_key: string; title: string; check: string; expected: string; observed: string; count: number; severity: string; sample_endpoints: { operation_id: string | null; method: string | null; path: string }[]; finding_ids: string[] }[];
@@ -162,6 +163,9 @@ function App() {
   const [requestError, setRequestError] = useState("");
   const [responsePayload, setResponsePayload] = useState<ResponsePayload | null>(null);
   const [rolesText, setRolesText] = useState("");
+  const [fixturesText, setFixturesText] = useState("");
+  const [discoverFixtures, setDiscoverFixtures] = useState(false);
+  const [fixturesOpen, setFixturesOpen] = useState(false);
   const [runBusy, setRunBusy] = useState(false);
   const [runError, setRunError] = useState("");
   const [runScopeMode, setRunScopeMode] = useState<"all" | "groups">("all");
@@ -400,9 +404,15 @@ function App() {
     let roles: unknown[] = [];
     try { roles = rolesText.trim() ? JSON.parse(rolesText) : []; if (!Array.isArray(roles)) throw new Error("Roles must be a JSON array."); }
     catch (error) { setRunError(error instanceof Error ? error.message : "Roles must be valid JSON."); return; }
+    let fixtures: Record<string, string> = {};
+    try {
+      const parsed = fixturesText.trim() ? JSON.parse(fixturesText) : {};
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.values(parsed).some((value) => value === null || typeof value === "object")) throw new Error("Fixtures must be a JSON object with scalar values.");
+      fixtures = Object.fromEntries(Object.entries(parsed).map(([name, value]) => [name, String(value)]));
+    } catch (error) { setRunError(error instanceof Error ? error.message : "Fixtures must be valid JSON."); return; }
     setRunError(""); setRunBusy(true); setReport(null); setRunSummary(null); setActiveCluster(null);
     try {
-      const created = await apiRequest<{ run_id: string }>(`${API}/runs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ base_url: baseUrl, auth: token ? { type: authMode, token, header_name: apiKeyHeader } : null, roles, allow_mutations: allowMutations, operation_ids: scopedOperationIds }) });
+      const created = await apiRequest<{ run_id: string }>(`${API}/runs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ base_url: baseUrl, auth: token ? { type: authMode, token, header_name: apiKeyHeader } : null, roles, fixtures, discover_fixtures: discoverFixtures, allow_mutations: allowMutations, operation_ids: scopedOperationIds }) });
       for (let attempt = 0; attempt < 180; attempt += 1) {
         const state = await apiRequest<{ status: string }>(`${API}/runs/${created.run_id}`);
         if (state.status === "completed") {
@@ -487,7 +497,7 @@ function App() {
         <main className="main-content">
           {page === "import" && <ImportPage specText={specText} setSpecText={setSpecText} error={importError} busy={importBusy} onFile={loadFile} onImport={() => void importSpec()} onDemo={() => void loadDemoContract()} />}
           {page === "explorer" && <ExplorerPage model={model} selectedOperation={selectedOperation} groups={operationGroups} search={operationSearch} setSearch={setOperationSearch} collapsed={endpointsCollapsed} setCollapsed={setEndpointsCollapsed} selectOperation={setSelectedOperationId} parameters={parameterValues} setParameters={setParameterValues} body={bodyValue} setBody={setBodyValue} requestTab={requestTab} setRequestTab={setRequestTab} responseTab={responseTab} setResponseTab={setResponseTab} response={responsePayload} requestError={requestError} requestBusy={requestBusy} send={sendOperation} mutations={allowMutations} authStatus={authStatus} openAuth={() => openSettings("auth")} openMcp={() => setPage("mcp")} copy={copyText} />}
-          {page === "runs" && <RunsPage model={model} roles={rolesText} setRoles={setRolesText} runBusy={runBusy} runError={runError} run={runChecks} mutations={allowMutations} scopeMode={runScopeMode} setScopeMode={setRunScopeMode} selectedGroups={selectedRunGroups} setSelectedGroups={setSelectedRunGroups} report={report} summary={runSummary} statusFilter={statusFilter} setStatusFilter={setStatusFilter} search={findingSearch} setSearch={setFindingSearch} searchRef={findingSearchRef} checkFilter={checkFilter} setCheckFilter={setCheckFilter} groupBy={groupBy} setGroupBy={setGroupBy} activeCluster={activeCluster} setActiveCluster={setActiveCluster} findings={filteredFindings} selectedId={selectedFindingId} setSelectedId={setSelectedFindingId} selectedFinding={selectedFinding} rowRefs={rowRefs} copy={copyText} />}
+          {page === "runs" && <RunsPage model={model} roles={rolesText} setRoles={setRolesText} fixtures={fixturesText} setFixtures={setFixturesText} discoverFixtures={discoverFixtures} setDiscoverFixtures={setDiscoverFixtures} fixturesOpen={fixturesOpen} setFixturesOpen={setFixturesOpen} runBusy={runBusy} runError={runError} run={runChecks} mutations={allowMutations} scopeMode={runScopeMode} setScopeMode={setRunScopeMode} selectedGroups={selectedRunGroups} setSelectedGroups={setSelectedRunGroups} report={report} summary={runSummary} statusFilter={statusFilter} setStatusFilter={setStatusFilter} search={findingSearch} setSearch={setFindingSearch} searchRef={findingSearchRef} checkFilter={checkFilter} setCheckFilter={setCheckFilter} groupBy={groupBy} setGroupBy={setGroupBy} activeCluster={activeCluster} setActiveCluster={setActiveCluster} findings={filteredFindings} selectedId={selectedFindingId} setSelectedId={setSelectedFindingId} selectedFinding={selectedFinding} rowRefs={rowRefs} copy={copyText} />}
           {page === "mcp" && <McpPage model={model} target={baseUrl} tokenSet={!!token} mutations={allowMutations} config={mcpConfig} error={mcpError} busy={mcpBusy} generate={generateMcpConfig} copy={copyText} />}
           {page === "settings" && <SettingsPage target={targetDraft} setTarget={setTargetDraft} saveTarget={saveTarget} authStatus={authStatus} authMode={authModeDraft} setAuthMode={setAuthModeDraft} header={headerDraft} setHeader={setHeaderDraft} token={tokenDraft} setToken={setTokenDraft} showToken={showToken} setShowToken={setShowToken} authError={authError} clearError={() => setAuthError("")} saveAuth={saveAuth} clearAuth={clearAuth} mutations={allowMutations} setMutations={(value) => { setAllowMutations(value); setMcpConfig(""); }} />}
         </main>
@@ -600,6 +610,8 @@ function ExplorerPage(props: {
 
 function RunsPage(props: {
   model: ApiModel | null; roles: string; setRoles: (value: string) => void; runBusy: boolean; runError: string; run: () => void;
+  fixtures: string; setFixtures: (value: string) => void; discoverFixtures: boolean; setDiscoverFixtures: (value: boolean) => void;
+  fixturesOpen: boolean; setFixturesOpen: (value: boolean) => void;
   scopeMode: "all" | "groups"; setScopeMode: (value: "all" | "groups") => void;
   selectedGroups: string[]; setSelectedGroups: (value: string[]) => void;
   mutations: boolean; report: RunReport | null; summary: RunSummary | null; statusFilter: "all" | "fail" | "pass" | "inconclusive";
@@ -611,6 +623,7 @@ function RunsPage(props: {
   copy: (value: string, message: string) => void;
 }) {
   const model = props.model;
+  const [scopeQuery, setScopeQuery] = useState("");
   const operations = useMemo(() => new Map((model?.operations ?? []).map((operation) => [operation.id, operation])), [model]);
   const scopeGroups = useMemo(() => {
     const grouped = new Map<string, Operation[]>();
@@ -620,6 +633,14 @@ function RunsPage(props: {
     }
     return [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b));
   }, [model]);
+  const visibleScopeGroups = useMemo(() => {
+    const query = scopeQuery.trim().toLocaleLowerCase();
+    return query ? scopeGroups.filter(([name]) => name.toLocaleLowerCase().includes(query)) : scopeGroups;
+  }, [scopeGroups, scopeQuery]);
+  const selectedScopeGroups = scopeGroups.filter(([name]) => props.selectedGroups.includes(name));
+  const displayedScopeGroups = visibleScopeGroups.slice(0, 200);
+  const displayedSelectedGroups = selectedScopeGroups.slice(0, 30);
+  const selectedOperationCount = selectedScopeGroups.reduce((count, [, items]) => count + items.length, 0);
   const schemas = Object.entries(model?.schemas ?? {}).sort(([a], [b]) => a.localeCompare(b));
   const checks = [...new Set((props.report?.findings ?? []).map((finding) => finding.check))].sort();
   const groups = useMemo(() => {
@@ -643,14 +664,21 @@ function RunsPage(props: {
       <div className="run-config surface">
         <div className="run-config-copy"><div className="heading-icon"><Settings2 size={16} /></div><div><strong>Run configuration</strong><span>Target, auth, and mutation mode are managed in Settings.</span></div><span className={`mutation-inline ${props.mutations ? "on" : "off"}`}>Mutations {props.mutations ? "On" : "Off"}</span></div>
         <section className="run-scope">
-          <div className="run-scope-heading"><div><strong>Run scope</strong><span>Choose all operations or select groups from the document.</span></div><div className="scope-mode segmented"><button className={props.scopeMode === "all" ? "active" : ""} onClick={() => props.setScopeMode("all")}>All operations <span>{model.operations.length}</span></button><button className={props.scopeMode === "groups" ? "active" : ""} onClick={() => props.setScopeMode("groups")}>Selected groups</button></div></div>
-          {props.scopeMode === "groups" && <div className="scope-group-list">{scopeGroups.map(([group, groupOperations]) => <label className="scope-group" key={group}><input type="checkbox" checked={props.selectedGroups.includes(group)} onChange={(event) => props.setSelectedGroups(event.target.checked ? [...props.selectedGroups, group] : props.selectedGroups.filter((item) => item !== group))} /><span><strong>{group}</strong><small>{groupOperations.length} operations</small></span></label>)}</div>}
-          {props.scopeMode === "groups" && !props.selectedGroups.length && <p className="scope-empty">Select one or more groups to start a scoped run.</p>}
+          <div className="run-scope-heading"><div><strong>Run scope</strong><span>Run the whole contract or choose groups of related operations.</span></div><div className="scope-mode segmented"><button className={props.scopeMode === "all" ? "active" : ""} onClick={() => props.setScopeMode("all")}>Entire API <span>{model.operations.length}</span></button><button className={props.scopeMode === "groups" ? "active" : ""} onClick={() => props.setScopeMode("groups")}>Choose groups</button></div></div>
+          {props.scopeMode === "groups" && <div className="scope-picker">
+            <section className="scope-browser" aria-label="Operation groups">
+              <div className="scope-browser-toolbar"><label className="scope-search"><Search size={14} /><input aria-label="Search operation groups" value={scopeQuery} onChange={(event) => setScopeQuery(event.target.value)} placeholder="Search groups" />{scopeQuery && <button className="icon-button" onClick={() => setScopeQuery("")} aria-label="Clear group search"><X size={13} /></button>}</label><span>{visibleScopeGroups.length} matching groups</span></div>
+              <div className="scope-bulk-actions"><button className="text-button" onClick={() => props.setSelectedGroups([...new Set([...props.selectedGroups, ...visibleScopeGroups.map(([name]) => name)])])}>Select {scopeQuery ? "matching" : "all"}</button><button className="text-button" onClick={() => props.setSelectedGroups([])} disabled={!props.selectedGroups.length}>Clear selection</button></div>
+              <div className="scope-group-list">{displayedScopeGroups.map(([group, groupOperations]) => <label className="scope-group" key={group}><input type="checkbox" checked={props.selectedGroups.includes(group)} onChange={(event) => props.setSelectedGroups(event.target.checked ? [...props.selectedGroups, group] : props.selectedGroups.filter((item) => item !== group))} /><span className="scope-group-name">{group}</span><small>{groupOperations.length} {groupOperations.length === 1 ? "operation" : "operations"}</small></label>)}{visibleScopeGroups.length > displayedScopeGroups.length && <div className="scope-no-results">Showing {displayedScopeGroups.length} of {visibleScopeGroups.length}. Search to narrow the list.</div>}{!visibleScopeGroups.length && <div className="scope-no-results">No groups match “{scopeQuery}”.</div>}</div>
+            </section>
+            <aside className="scope-selection" aria-label="Selected operation groups"><div className="scope-selection-heading"><div><strong>Included in run</strong><span>{props.selectedGroups.length} groups · {selectedOperationCount} operations</span></div><span className="scope-selection-count">{selectedOperationCount}</span></div>{selectedScopeGroups.length ? <div className="scope-selected-list">{displayedSelectedGroups.map(([group, groupOperations]) => <div className="scope-selected-item" key={group}><div><strong>{group}</strong><span>{groupOperations.length} {groupOperations.length === 1 ? "operation" : "operations"}</span></div><button className="icon-button" onClick={() => props.setSelectedGroups(props.selectedGroups.filter((item) => item !== group))} aria-label={`Remove ${group}`}><X size={14} /></button></div>)}{selectedScopeGroups.length > displayedSelectedGroups.length && <p className="scope-more-selected">+ {selectedScopeGroups.length - displayedSelectedGroups.length} more groups. Search to manage them.</p>}</div> : <p className="scope-selection-empty">Choose groups from the list to define a focused run.</p>}</aside>
+          </div>}
         </section>
         <details className="contract-structure"><summary><span>Document schemas and relationships</span><small>{schemas.length} named schemas</small></summary>{schemas.length ? <div className="schema-table-wrap"><table className="schema-table"><thead><tr><th>SCHEMA</th><th>FIELDS</th><th>RELATIONSHIPS</th></tr></thead><tbody>{schemas.map(([name, schema]) => { const properties = schema.properties && typeof schema.properties === "object" ? Object.keys(schema.properties as Record<string, unknown>) : []; const relations = schemaRelations(schema); return <tr key={name}><th>{name}</th><td>{properties.length ? properties.map((field) => <code key={field}>{field}</code>) : <span className="muted">No named fields</span>}</td><td>{relations.length ? relations.map((relation) => <code key={relation}>{relation}</code>) : <span className="muted">No direct references</span>}</td></tr>; })}</tbody></table></div> : <p className="schema-empty">This document has no named component schemas to map.</p>}</details>
-        <div className="run-options"><label className="field-label" htmlFor="role-config">ROLE CONFIGURATION <span>OPTIONAL JSON ARRAY</span></label><textarea id="role-config" className="roles-editor" value={props.roles} onChange={(event) => props.setRoles(event.target.value)} placeholder={'[{"name":"viewer","token":"...","allowed_operation_ids":["list_items"]}]'} /></div>
+        <details id="fixtures-editor" className="run-options fixtures-options" open={props.fixturesOpen} onToggle={(event) => props.setFixturesOpen(event.currentTarget.open)}><summary><span>Path fixtures</span><small>Optional · replace generated path values with known resources</small></summary><label className="field-label" htmlFor="fixtures-json">PATH PARAMETER VALUES</label><textarea id="fixtures-json" className="roles-editor" value={props.fixtures} onChange={(event) => props.setFixtures(event.target.value)} placeholder={'{"id":"1","slug":"rose"}'} /><label className="discovery-toggle"><input type="checkbox" checked={props.discoverFixtures} onChange={(event) => props.setDiscoverFixtures(event.target.checked)} /><span><strong>Discover IDs from list responses</strong><small>Use the first item returned by a matching GET list operation. Off by default.</small></span></label></details>
+        <details className="run-options"><summary><span>Role configurations</span><small>Optional · test operations with multiple access levels</small></summary><label className="field-label" htmlFor="role-config">CONFIGURATION JSON</label><textarea id="role-config" className="roles-editor" value={props.roles} onChange={(event) => props.setRoles(event.target.value)} placeholder={'[{"name":"viewer","token":"...","allowed_operation_ids":["list_items"]}]'} /><p>Provide role credentials and the operation IDs each role can access.</p></details>
         {props.runError && <InlineMessage tone="error">{props.runError}</InlineMessage>}
-        <div className="run-config-actions"><span className="muted"><ShieldCheck size={13} />Mutation safety is controlled in Settings.</span><button className="button button-primary" onClick={props.run} disabled={props.runBusy || (props.scopeMode === "groups" && !props.selectedGroups.length)}>{props.runBusy ? <LoaderCircle size={14} className="spin" /> : <Play size={14} />}{props.runBusy ? "Running checks" : props.scopeMode === "all" ? "Run all operations" : `Run ${props.selectedGroups.length} selected groups`}<ArrowRight size={14} /></button></div>
+        <div className="run-config-actions"><span className="muted"><ShieldCheck size={13} />Mutation safety is controlled in Settings.</span><button className="button button-primary" onClick={props.run} disabled={props.runBusy || (props.scopeMode === "groups" && !props.selectedGroups.length)}>{props.runBusy ? <LoaderCircle size={14} className="spin" /> : <Play size={14} />}{props.runBusy ? "Running checks" : props.scopeMode === "all" ? `Run all ${model.operations.length} operations` : `Run ${selectedOperationCount} selected operations`}<ArrowRight size={14} /></button></div>
       </div>
       {props.report && props.summary && <>
         <section className="run-overview">
@@ -660,7 +688,7 @@ function RunsPage(props: {
             <div className="surface overview-card"><div className="card-label">SEVERITY × STATUS</div><SeverityMatrix matrix={props.summary.severity_status} /></div>
             <div className="surface overview-card"><div className="card-label">FAILURES BY CHECK</div><CheckBars items={props.summary.failures_by_check} /></div>
           </div>
-          <div className="surface attention-card"><div className="section-heading"><div><div className="eyebrow">PRIORITIZED TRIAGE</div><h3>Needs attention</h3></div><span className="attention-count">{props.summary.clusters.length} clusters</span></div>{props.summary.clusters.length ? <div className="cluster-grid">{props.summary.clusters.map((cluster) => <button key={cluster.cluster_key} className={`cluster-card ${props.activeCluster === cluster.cluster_key ? "selected" : ""}`} onClick={() => { props.setActiveCluster(props.activeCluster === cluster.cluster_key ? null : cluster.cluster_key); props.setStatusFilter("fail"); }}><div className="cluster-top"><SeverityBadge severity={cluster.severity} /><span className="cluster-count">{cluster.count} findings</span></div><strong>{cluster.check}</strong><p>{cluster.observed || cluster.expected}</p><div className="cluster-endpoints">{cluster.sample_endpoints.map((endpoint) => <code key={`${cluster.cluster_key}:${endpoint.operation_id}`}>{endpoint.method} {endpoint.path}</code>)}</div></button>)}</div> : <div className="empty-inline">No failed clusters in this run.</div>}</div>
+          <div className="surface attention-card"><div className="section-heading"><div><div className="eyebrow">PRIORITIZED TRIAGE</div><h3>Needs attention</h3></div><span className="attention-count">{props.summary.clusters.length} clusters</span></div>{(props.summary.missing_fixture_inconclusive ?? 0) > 0 && <div className="fixture-summary">{props.summary.missing_fixture_inconclusive} inconclusive due to missing fixtures <a href="#fixtures-editor" onClick={(event) => { event.preventDefault(); props.setFixturesOpen(true); window.setTimeout(() => document.getElementById("fixtures-editor")?.scrollIntoView({ behavior: "smooth", block: "center" }), 0); }}>Configure fixtures</a></div>}{props.summary.clusters.length ? <div className="cluster-grid">{props.summary.clusters.map((cluster) => <button key={cluster.cluster_key} className={`cluster-card ${props.activeCluster === cluster.cluster_key ? "selected" : ""}`} onClick={() => { props.setActiveCluster(props.activeCluster === cluster.cluster_key ? null : cluster.cluster_key); props.setStatusFilter("fail"); }}><div className="cluster-top"><SeverityBadge severity={cluster.severity} /><span className="cluster-count">{cluster.count} findings</span></div><strong>{cluster.check}</strong><p>{cluster.observed || cluster.expected}</p><div className="cluster-endpoints">{cluster.sample_endpoints.map((endpoint) => <code key={`${cluster.cluster_key}:${endpoint.operation_id}`}>{endpoint.method} {endpoint.path}</code>)}</div></button>)}</div> : <div className="empty-inline">No failed clusters in this run.</div>}</div>
         </section>
         <section className="triage-section surface">
           <div className="triage-heading"><div><div className="eyebrow">FINDINGS</div><h2>Review and filter</h2></div><div className="keyboard-hint"><kbd>j</kbd><kbd>k</kbd> move <kbd>Enter</kbd> inspect <kbd>/</kbd> search</div></div>
