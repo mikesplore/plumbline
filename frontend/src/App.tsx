@@ -119,7 +119,7 @@ function App() {
   const [authStatus, setAuthStatus] = useState<AuthStatus>("missing");
   const [authError, setAuthError] = useState("");
   const [allowMutations, setAllowMutations] = useState(false);
-  const [sessionEditor, setSessionEditor] = useState<"target" | "auth" | null>(null);
+  const [sessionEditor, setSessionEditor] = useState<"session" | null>(null);
   const [targetDraft, setTargetDraft] = useState("");
   const [tokenDraft, setTokenDraft] = useState("");
   const [authModeDraft, setAuthModeDraft] = useState<AuthMode>("bearer");
@@ -269,7 +269,7 @@ function App() {
   }, [page, filteredFindings, selectedFindingId]);
 
   function openSessionEditor(type: "target" | "auth") {
-    setSessionEditor(sessionEditor === type ? null : type);
+    setSessionEditor(sessionEditor === "session" ? null : "session");
     if (type === "target") setTargetDraft(baseUrl);
     if (type === "auth") {
       setAuthError("");
@@ -395,7 +395,6 @@ function App() {
   }
 
   async function generateMcpConfig() {
-    if (!model) { setMcpError("Import an OpenAPI document first."); return; }
     if (!baseUrl.trim()) { setMcpError("Set the API target in the session bar first."); return; }
     if (!model) { setMcpError("Import an OpenAPI document first."); return; }
     setMcpError(""); setMcpBusy(true);
@@ -443,19 +442,27 @@ function App() {
         <button className="brand-button" onClick={() => setPage("import")} aria-label="Plumbline home"><span className="brand-icon"><Activity size={17} /></span><span className="brand-name">plumbline<span>.</span></span></button>
         <span className="header-divider" />
         <div className="session-context"><span className="session-caption">API</span><strong>{model?.title ?? "No API loaded"}</strong><span className="version-label">{model ? `v${model.version}` : "Import a contract"}</span></div>
-        <div className="session-chips">
-          <div className="session-popover-wrap">
-            <button className={`session-chip ${baseUrl ? "configured" : "attention"}`} onClick={() => openSessionEditor("target")}><Globe2 size={14} /><span className="chip-label">Target</span><strong>{baseUrl || "Set target"}</strong><ChevronDown size={13} /></button>
-            {sessionEditor === "target" && <div className="session-popover target-popover"><div className="popover-title"><strong>API target</strong><button className="icon-button" onClick={() => setSessionEditor(null)} aria-label="Close target settings"><X size={14} /></button></div><label className="field-label">BASE URL</label><input autoFocus value={targetDraft} onChange={(event) => setTargetDraft(event.target.value)} placeholder="http://127.0.0.1:8002" onKeyDown={(event) => { if (event.key === "Enter") saveTarget(); }} /><div className="popover-actions"><button className="button button-primary" onClick={saveTarget}>Save target</button></div></div>}
-          </div>
-          <div className="session-popover-wrap">
-            <button className={`session-chip auth-chip auth-${authStatus}`} onClick={() => openSessionEditor("auth")}><KeyRound size={14} /><span className="chip-label">Auth</span><strong>{authStatus === "set" ? "Set" : authStatus === "invalid" ? "Invalid" : "Missing"}</strong><ChevronDown size={13} /></button>
-            {sessionEditor === "auth" && <div className="session-popover auth-popover"><div className="popover-title"><strong>Authentication</strong><button className="icon-button" onClick={() => setSessionEditor(null)} aria-label="Close auth settings"><X size={14} /></button></div><label className="field-label">AUTH TYPE</label><select value={authModeDraft} onChange={(event) => { setAuthModeDraft(event.target.value as AuthMode); setAuthError(""); }}><option value="bearer">Bearer token</option><option value="apikey">API key</option></select>{authModeDraft === "apikey" && <><label className="field-label">HEADER NAME</label><input value={headerDraft} onChange={(event) => { setHeaderDraft(event.target.value); setAuthError(""); }} /></>}<label className="field-label">TOKEN</label><div className="secret-input"><input type={showToken ? "text" : "password"} value={tokenDraft} onChange={(event) => { setTokenDraft(event.target.value); setAuthError(""); }} placeholder="Paste token" autoComplete="off" /><button className="icon-button" onClick={() => setShowToken((value) => !value)} aria-label={showToken ? "Hide token" : "Reveal token"}>{showToken ? <EyeOff size={15} /> : <Eye size={15} />}</button></div><div className="secret-hint">Token is masked and stays in this browser session.</div>{authError && <InlineMessage tone="error">{authError}</InlineMessage>}<div className="popover-actions"><button className="button button-quiet danger-text" onClick={clearAuth}>Clear</button><button className="button button-primary" onClick={saveAuth}>Save auth</button></div></div>}
-          </div>
-          <button className={`session-chip mutation-chip ${allowMutations ? "mutation-on" : "mutation-off"}`} onClick={() => { setAllowMutations((value) => !value); setMcpConfig(""); }} aria-pressed={allowMutations}><ShieldCheck size={14} /><span className="chip-label">Mutations</span><strong>{allowMutations ? "On" : "Off"}</strong></button>
-          <span className={`session-chip last-run-chip run-${lastRunStatus}`}><span className="status-glyph">{lastRunStatus === "good" ? "✓" : lastRunStatus === "bad" ? "!" : lastRunStatus === "inconclusive" ? "?" : "—"}</span><span className="chip-label">Last run</span><strong>{lastRunStatus === "good" ? "Good" : lastRunStatus === "bad" ? "Needs attention" : lastRunStatus === "inconclusive" ? "Inconclusive" : "Not run"}</strong></span>
+        <div className="session-control-wrap">
+          <button className={`session-summary ${baseUrl ? "" : "target-missing"}`} onClick={() => openSessionEditor("target")} aria-expanded={sessionEditor === "session"}>
+            <Globe2 size={15} /><span className="session-target"><span>Target</span><strong>{baseUrl || "Set target"}</strong></span>
+            <span className="session-summary-divider" />
+            <span className={`session-state auth-${authStatus}`}><KeyRound size={14} /><span>Auth</span><strong>{authStatus === "set" ? "Set" : authStatus === "invalid" ? "Invalid" : "Missing"}</strong></span>
+            <span className="session-summary-divider" />
+            <span className={`session-state ${allowMutations ? "mutation-on" : "mutation-off"}`}><ShieldCheck size={14} /><span>Changes</span><strong>{allowMutations ? "On" : "Off"}</strong></span>
+            <ChevronDown size={14} />
+          </button>
+          {sessionEditor === "session" && <div className="session-popover session-settings">
+            <div className="popover-title"><div><strong>Session settings</strong><span>Target, credentials, and safety mode</span></div><button className="icon-button" onClick={() => setSessionEditor(null)} aria-label="Close session settings"><X size={14} /></button></div>
+            <label className="field-label" htmlFor="session-target">API TARGET</label><div className="target-editor"><input id="session-target" autoFocus value={targetDraft} onChange={(event) => setTargetDraft(event.target.value)} placeholder="http://127.0.0.1:8002" onKeyDown={(event) => { if (event.key === "Enter") saveTarget(); }} /><button className="button button-secondary" onClick={saveTarget}>Save target</button></div>
+            <div className="settings-divider" />
+            <div className="settings-section-title"><KeyRound size={15} /><strong>Authentication</strong><span className={`auth-state-label auth-${authStatus}`}>{authStatus === "set" ? "Set" : authStatus === "invalid" ? "Invalid" : "Missing"}</span></div>
+            <label className="field-label">AUTH TYPE</label><select value={authModeDraft} onChange={(event) => { setAuthModeDraft(event.target.value as AuthMode); setAuthError(""); }}><option value="bearer">Bearer token</option><option value="apikey">API key</option></select>{authModeDraft === "apikey" && <><label className="field-label">HEADER NAME</label><input value={headerDraft} onChange={(event) => { setHeaderDraft(event.target.value); setAuthError(""); }} /></>}<label className="field-label">TOKEN</label><div className="secret-input"><input type={showToken ? "text" : "password"} value={tokenDraft} onChange={(event) => { setTokenDraft(event.target.value); setAuthError(""); }} placeholder="Paste token" autoComplete="off" /><button className="icon-button" onClick={() => setShowToken((value) => !value)} aria-label={showToken ? "Hide token" : "Reveal token"}>{showToken ? <EyeOff size={15} /> : <Eye size={15} />}</button></div><div className="secret-hint">Token is masked and stays in this browser session.</div>{authError && <InlineMessage tone="error">{authError}</InlineMessage>}
+            <div className="session-setting-row"><div><strong>State-changing requests</strong><span>{allowMutations ? "Enabled for this session" : "Off by default"}</span></div><button className={`session-toggle ${allowMutations ? "on" : ""}`} onClick={() => { setAllowMutations((value) => !value); setMcpConfig(""); }} aria-label={allowMutations ? "Turn mutations off" : "Turn mutations on"} aria-pressed={allowMutations}><span /></button></div>
+            <div className="popover-actions"><button className="button button-quiet danger-text" onClick={clearAuth}>Clear auth</button><button className="button button-primary" onClick={saveAuth}>Save auth</button></div>
+          </div>}
         </div>
-        <div className="session-right"><span className="current-area"><span>AREA</span>{pages.find((entry) => entry.id === page)?.label}</span><button className="button button-primary header-ai" onClick={() => setPage("mcp")}><Braces size={15} />Use with AI client</button></div>
+        <span className={`session-chip last-run-chip run-${lastRunStatus}`}><span className="status-glyph">{lastRunStatus === "good" ? "✓" : lastRunStatus === "bad" ? "!" : lastRunStatus === "inconclusive" ? "?" : "—"}</span><span className="chip-label">Last run</span><strong>{lastRunStatus === "good" ? "Good" : lastRunStatus === "bad" ? "Needs attention" : lastRunStatus === "inconclusive" ? "Inconclusive" : "Not run"}</strong></span>
+        <div className="session-right"><button className="button button-primary header-ai" onClick={() => setPage("mcp")}><Braces size={15} />Use with AI client</button></div>
       </header>
 
       <div className="app-body">
