@@ -176,7 +176,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/debug/crash": {
@@ -206,6 +211,7 @@
             "required": false,
             "schema": {
               "type": "string",
+              "maxLength": 100,
               "default": "",
               "title": "Q"
             }

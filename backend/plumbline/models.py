@@ -1,9 +1,9 @@
 """Shared API contract and test report models."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field
 
 
 class Operation(BaseModel):
@@ -31,7 +31,7 @@ class RequestEvidence(BaseModel):
     method: str
     url: str
     headers: dict[str, str] = Field(default_factory=dict)
-    body: str | dict | list | None = None
+    body: Any = None
 
 
 class ResponseEvidence(BaseModel):
@@ -60,3 +60,29 @@ class RunReport(BaseModel):
     config: dict = Field(default_factory=dict)
     findings: list[Finding] = Field(default_factory=list)
     summary: dict[str, int] = Field(default_factory=dict)
+
+
+class AuthConfig(BaseModel):
+    type: Literal["bearer", "apikey"]
+    token: str
+    header_name: str = "X-API-Key"
+
+
+class RoleConfig(BaseModel):
+    name: str
+    token: str
+    allowed_operation_ids: list[str] = Field(default_factory=list)
+
+
+class RateLimitConfig(BaseModel):
+    operation_id: str
+    expected_limit: int = Field(ge=1)
+    window_s: float = Field(ge=0)
+
+
+class RunConfig(BaseModel):
+    base_url: AnyHttpUrl
+    auth: AuthConfig | None = None
+    roles: list[RoleConfig] = Field(default_factory=list)
+    allow_mutations: bool = False
+    rate_limit: RateLimitConfig | None = None

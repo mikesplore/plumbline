@@ -1,7 +1,7 @@
 """Small API with seeded contract defects for Plumbline's demo."""
 
 import asyncio
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 
@@ -10,6 +10,18 @@ app = FastAPI(title="Plumbline Demo API", version="1.0.0", servers=[{"url": "htt
 _items = [{"id": 1, "name": "Notebook", "price": 4.5}]
 _redeemed_orders: set[int] = set()
 _security = [{"BearerAuth": []}]
+_tokens = {"admin-demo-token": "admin", "user-demo-token": "user", "viewer-demo-token": "viewer"}
+
+
+def reset_demo_state():
+    _items[:] = [{"id": 1, "name": "Notebook", "price": 4.5}]
+    _redeemed_orders.clear()
+
+
+def _role_for(request: Request):
+    authorization = request.headers.get("authorization", "")
+    token = authorization.removeprefix("Bearer ")
+    return _tokens.get(token) if authorization.startswith("Bearer ") else None
 
 
 def _openapi_schema():
@@ -39,15 +51,20 @@ async def get_item(id: int):
     return {**item, "price": str(item["price"])}
 
 
-@app.get("/admin/users", operation_id="list_admin_users", summary="List admin users")
-async def list_admin_users():
-    # Seeded defect: the operation is documented as secured but accepts no token.
+@app.get("/admin/users", operation_id="list_admin_users", summary="List admin users", openapi_extra={"security": _security})
+async def list_admin_users(request: Request):
+    # Seeded defect: missing credentials are accepted, while garbage tokens are rejected.
+    authorization = request.headers.get("authorization")
+    if authorization and _role_for(request) is None:
+        return JSONResponse(status_code=401, content={"detail": "Invalid token"})
     return [{"id": 1, "name": "Admin"}]
 
 
 @app.post("/items", operation_id="create_item", summary="Create an item", status_code=201,
           openapi_extra={"security": _security, "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}, "price": {"type": "number"}}}}}}})
-async def create_item(payload: dict):
+async def create_item(payload: dict, request: Request):
+    if _role_for(request) not in {"admin", "user"}:
+        return JSONResponse(status_code=401, content={"detail": "Authentication required"})
     # Seeded defect: missing name succeeds and a wrong type returns a server error.
     if "name" in payload and not isinstance(payload["name"], str):
         return JSONResponse(status_code=500, content={"detail": "TypeError: expected string"})
@@ -58,8 +75,10 @@ async def create_item(payload: dict):
 
 @app.delete("/items/{id}", operation_id="delete_item", summary="Delete an item", status_code=204,
             openapi_extra={"security": _security})
-async def delete_item(id: int):
-    # Seeded defect: the viewer token would be allowed by the demo policy.
+async def delete_item(id: int, request: Request):
+    # Seeded defect: viewer credentials are accepted for a privileged deletion.
+    if _role_for(request) is None:
+        return JSONResponse(status_code=401, content={"detail": "Authentication required"})
     _items[:] = [item for item in _items if item["id"] != id]
 
 
@@ -69,8 +88,8 @@ async def debug_crash():
 
 
 @app.get("/search", operation_id="search_items", summary="Search items", responses={429: {"description": "Rate limit exceeded"}})
-async def search_items(q: str = ""):
-    return [item for item in _items if q.lower() in item["name"].lower()]
+async def search_items(q: str = Query(default="", max_length=100)):
+    return [item for item in _items if q.lower() in (item.get("name") or "").lower()]
 
 
 @app.post("/orders/redeem", operation_id="redeem_order", summary="Redeem an order", status_code=200,
