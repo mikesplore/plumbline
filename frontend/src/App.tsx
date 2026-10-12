@@ -29,7 +29,7 @@ type RunSummary = {
   clusters: { cluster_key: string; title: string; check: string; expected: string; observed: string; count: number; severity: string; sample_endpoints: { operation_id: string | null; method: string | null; path: string }[]; finding_ids: string[] }[];
 };
 type AuthMode = "bearer" | "apikey";
-type Page = "import" | "explorer" | "runs" | "mcp";
+type Page = "import" | "explorer" | "runs" | "mcp" | "settings";
 type AuthStatus = "missing" | "set" | "invalid";
 type ResponsePayload = { status: number; url: string; headers: Record<string, string>; body: unknown; elapsed_ms: number };
 type RequestTab = "Params" | "Body" | "Auth" | "Headers";
@@ -119,7 +119,6 @@ function App() {
   const [authStatus, setAuthStatus] = useState<AuthStatus>("missing");
   const [authError, setAuthError] = useState("");
   const [allowMutations, setAllowMutations] = useState(false);
-  const [sessionEditor, setSessionEditor] = useState<"session" | null>(null);
   const [targetDraft, setTargetDraft] = useState("");
   const [tokenDraft, setTokenDraft] = useState("");
   const [authModeDraft, setAuthModeDraft] = useState<AuthMode>("bearer");
@@ -268,9 +267,9 @@ function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [page, filteredFindings, selectedFindingId]);
 
-  function openSessionEditor(type: "target" | "auth") {
-    setSessionEditor(sessionEditor === "session" ? null : "session");
-    if (type === "target") setTargetDraft(baseUrl);
+  function openSettings(type: "target" | "auth" = "target") {
+    setPage("settings");
+    setTargetDraft(baseUrl);
     if (type === "auth") {
       setAuthError("");
       setTokenDraft(token);
@@ -291,7 +290,6 @@ function App() {
     }
     if (tokenDraft === token && authModeDraft === authMode && headerDraft === apiKeyHeader) {
       setToast("Token unchanged");
-      setSessionEditor(null);
       return;
     }
     setToken(tokenDraft);
@@ -300,17 +298,15 @@ function App() {
     setAuthStatus(tokenDraft ? "set" : "missing");
     setMcpConfig("");
     setToast("Auth updated");
-    setSessionEditor(null);
   }
 
   function clearAuth() {
-    setToken(""); setTokenDraft(""); setAuthStatus("missing"); setAuthError(""); setMcpConfig(""); setToast("Auth cleared"); setSessionEditor(null);
+    setToken(""); setTokenDraft(""); setAuthStatus("missing"); setAuthError(""); setMcpConfig(""); setToast("Auth cleared");
   }
 
   function saveTarget() {
     const target = targetDraft.trim().replace(/\/$/, "");
     setBaseUrl(target); localStorage.setItem("plumbline-target", target); setMcpConfig("");
-    setSessionEditor(null);
     setToast("Target updated");
   }
 
@@ -339,8 +335,8 @@ function App() {
   }
 
   async function sendOperation() {
-    if (!selectedOperation || !baseUrl.trim()) { setRequestError("Set a target in the session bar before sending a request."); return; }
-    if (selectedOperation.method !== "GET" && !allowMutations) { setRequestError("Mutations are off. Turn them on in the session bar before sending this request."); return; }
+    if (!selectedOperation || !baseUrl.trim()) { setRequestError("Set a target in Settings before sending a request."); return; }
+    if (selectedOperation.method !== "GET" && !allowMutations) { setRequestError("Mutations are off. Turn them on in Settings before sending this request."); return; }
     const parameters: Record<string, unknown> = {};
     try {
       for (const parameter of selectedOperation.parameters) {
@@ -367,7 +363,7 @@ function App() {
 
   async function runChecks() {
     if (!model) { setRunError("Import a contract before starting a run."); return; }
-    if (!baseUrl.trim()) { setRunError("Set a target in the session bar before starting a run."); return; }
+    if (!baseUrl.trim()) { setRunError("Set a target in Settings before starting a run."); return; }
     let roles: unknown[] = [];
     try { roles = rolesText.trim() ? JSON.parse(rolesText) : []; if (!Array.isArray(roles)) throw new Error("Roles must be a JSON array."); }
     catch (error) { setRunError(error instanceof Error ? error.message : "Roles must be valid JSON."); return; }
@@ -395,7 +391,7 @@ function App() {
   }
 
   async function generateMcpConfig() {
-    if (!baseUrl.trim()) { setMcpError("Set the API target in the session bar first."); return; }
+    if (!baseUrl.trim()) { setMcpError("Set the API target in Settings first."); return; }
     if (!model) { setMcpError("Import an OpenAPI document first."); return; }
     setMcpError(""); setMcpBusy(true);
     try {
@@ -434,6 +430,7 @@ function App() {
     { id: "explorer", label: "Explorer", icon: Code2 },
     { id: "runs", label: "Runs", icon: FlaskConical, badge: String(runCount) },
     { id: "mcp", label: "MCP", icon: Braces },
+    { id: "settings", label: "Settings", icon: Settings2 },
   ];
 
   return (
@@ -442,25 +439,6 @@ function App() {
         <button className="brand-button" onClick={() => setPage("import")} aria-label="Plumbline home"><span className="brand-icon"><Activity size={17} /></span><span className="brand-name">plumbline<span>.</span></span></button>
         <span className="header-divider" />
         <div className="session-context"><span className="session-caption">API</span><strong>{model?.title ?? "No API loaded"}</strong><span className="version-label">{model ? `v${model.version}` : "Import a contract"}</span></div>
-        <div className="session-control-wrap">
-          <button className={`session-summary ${baseUrl ? "" : "target-missing"}`} onClick={() => openSessionEditor("target")} aria-expanded={sessionEditor === "session"}>
-            <Globe2 size={15} /><span className="session-target"><span>Target</span><strong>{baseUrl || "Set target"}</strong></span>
-            <span className="session-summary-divider" />
-            <span className={`session-state auth-${authStatus}`}><KeyRound size={14} /><span>Auth</span><strong>{authStatus === "set" ? "Set" : authStatus === "invalid" ? "Invalid" : "Missing"}</strong></span>
-            <span className="session-summary-divider" />
-            <span className={`session-state ${allowMutations ? "mutation-on" : "mutation-off"}`}><ShieldCheck size={14} /><span>Changes</span><strong>{allowMutations ? "On" : "Off"}</strong></span>
-            <ChevronDown size={14} />
-          </button>
-          {sessionEditor === "session" && <div className="session-popover session-settings">
-            <div className="popover-title"><div><strong>Session settings</strong><span>Target, credentials, and safety mode</span></div><button className="icon-button" onClick={() => setSessionEditor(null)} aria-label="Close session settings"><X size={14} /></button></div>
-            <label className="field-label" htmlFor="session-target">API TARGET</label><div className="target-editor"><input id="session-target" autoFocus value={targetDraft} onChange={(event) => setTargetDraft(event.target.value)} placeholder="http://127.0.0.1:8002" onKeyDown={(event) => { if (event.key === "Enter") saveTarget(); }} /><button className="button button-secondary" onClick={saveTarget}>Save target</button></div>
-            <div className="settings-divider" />
-            <div className="settings-section-title"><KeyRound size={15} /><strong>Authentication</strong><span className={`auth-state-label auth-${authStatus}`}>{authStatus === "set" ? "Set" : authStatus === "invalid" ? "Invalid" : "Missing"}</span></div>
-            <label className="field-label">AUTH TYPE</label><select value={authModeDraft} onChange={(event) => { setAuthModeDraft(event.target.value as AuthMode); setAuthError(""); }}><option value="bearer">Bearer token</option><option value="apikey">API key</option></select>{authModeDraft === "apikey" && <><label className="field-label">HEADER NAME</label><input value={headerDraft} onChange={(event) => { setHeaderDraft(event.target.value); setAuthError(""); }} /></>}<label className="field-label">TOKEN</label><div className="secret-input"><input type={showToken ? "text" : "password"} value={tokenDraft} onChange={(event) => { setTokenDraft(event.target.value); setAuthError(""); }} placeholder="Paste token" autoComplete="off" /><button className="icon-button" onClick={() => setShowToken((value) => !value)} aria-label={showToken ? "Hide token" : "Reveal token"}>{showToken ? <EyeOff size={15} /> : <Eye size={15} />}</button></div><div className="secret-hint">Token is masked and stays in this browser session.</div>{authError && <InlineMessage tone="error">{authError}</InlineMessage>}
-            <div className="session-setting-row"><div><strong>State-changing requests</strong><span>{allowMutations ? "Enabled for this session" : "Off by default"}</span></div><button className={`session-toggle ${allowMutations ? "on" : ""}`} onClick={() => { setAllowMutations((value) => !value); setMcpConfig(""); }} aria-label={allowMutations ? "Turn mutations off" : "Turn mutations on"} aria-pressed={allowMutations}><span /></button></div>
-            <div className="popover-actions"><button className="button button-quiet danger-text" onClick={clearAuth}>Clear auth</button><button className="button button-primary" onClick={saveAuth}>Save auth</button></div>
-          </div>}
-        </div>
         <span className={`session-chip last-run-chip run-${lastRunStatus}`}><span className="status-glyph">{lastRunStatus === "good" ? "✓" : lastRunStatus === "bad" ? "!" : lastRunStatus === "inconclusive" ? "?" : "—"}</span><span className="chip-label">Last run</span><strong>{lastRunStatus === "good" ? "Good" : lastRunStatus === "bad" ? "Needs attention" : lastRunStatus === "inconclusive" ? "Inconclusive" : "Not run"}</strong></span>
         <div className="session-right"><button className="button button-primary header-ai" onClick={() => setPage("mcp")}><Braces size={15} />Use with AI client</button></div>
       </header>
@@ -469,18 +447,18 @@ function App() {
         <aside className={`app-sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
           <div className="sidebar-heading"><span>WORKSPACE</span><button className="icon-button collapse-button" onClick={() => setSidebarCollapsed((value) => !value)} aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}>{sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}</button></div>
           <nav className="nav-list" aria-label="Main navigation">
-            {pages.map(({ id, label, icon: Icon, badge }) => <button key={id} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => { setPage(id); setSessionEditor(null); }} title={sidebarCollapsed ? label : undefined} aria-label={label}><Icon size={17} /><span className="nav-label">{label}</span>{badge !== undefined && !sidebarCollapsed && <span className="nav-count">{badge}</span>}</button>)}
+            {pages.map(({ id, label, icon: Icon, badge }) => <button key={id} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => { if (id === "settings") openSettings(); else setPage(id); }} title={sidebarCollapsed ? label : undefined} aria-label={label}><Icon size={17} /><span className="nav-label">{label}</span>{badge !== undefined && !sidebarCollapsed && <span className="nav-count">{badge}</span>}</button>)}
           </nav>
           <div className="sidebar-spacer" />
-          <div className={`mutation-note ${allowMutations ? "note-on" : "note-off"}`}><ShieldCheck size={15} /><div><strong>{allowMutations ? "MUTATIONS ON" : "SAFE BY DEFAULT"}</strong><p>{allowMutations ? "State-changing probes are enabled." : "State-changing probes are off."}</p></div></div>
           <div className="sidebar-footer"><span className="footer-mark">PL</span><span className="footer-label">API verification</span><span className="build-version">0.1.0</span></div>
         </aside>
 
         <main className="main-content">
           {page === "import" && <ImportPage specText={specText} setSpecText={setSpecText} error={importError} busy={importBusy} onFile={loadFile} onImport={() => void importSpec()} onDemo={() => void loadDemoContract()} />}
-          {page === "explorer" && <ExplorerPage model={model} selectedOperation={selectedOperation} groups={operationGroups} search={operationSearch} setSearch={setOperationSearch} collapsed={endpointsCollapsed} setCollapsed={setEndpointsCollapsed} selectOperation={setSelectedOperationId} parameters={parameterValues} setParameters={setParameterValues} body={bodyValue} setBody={setBodyValue} requestTab={requestTab} setRequestTab={setRequestTab} responseTab={responseTab} setResponseTab={setResponseTab} response={responsePayload} requestError={requestError} requestBusy={requestBusy} send={sendOperation} mutations={allowMutations} authStatus={authStatus} openAuth={() => openSessionEditor("auth")} openMcp={() => setPage("mcp")} copy={copyText} />}
+          {page === "explorer" && <ExplorerPage model={model} selectedOperation={selectedOperation} groups={operationGroups} search={operationSearch} setSearch={setOperationSearch} collapsed={endpointsCollapsed} setCollapsed={setEndpointsCollapsed} selectOperation={setSelectedOperationId} parameters={parameterValues} setParameters={setParameterValues} body={bodyValue} setBody={setBodyValue} requestTab={requestTab} setRequestTab={setRequestTab} responseTab={responseTab} setResponseTab={setResponseTab} response={responsePayload} requestError={requestError} requestBusy={requestBusy} send={sendOperation} mutations={allowMutations} authStatus={authStatus} openAuth={() => openSettings("auth")} openMcp={() => setPage("mcp")} copy={copyText} />}
           {page === "runs" && <RunsPage model={model} roles={rolesText} setRoles={setRolesText} runBusy={runBusy} runError={runError} run={runChecks} mutations={allowMutations} report={report} summary={runSummary} statusFilter={statusFilter} setStatusFilter={setStatusFilter} search={findingSearch} setSearch={setFindingSearch} searchRef={findingSearchRef} checkFilter={checkFilter} setCheckFilter={setCheckFilter} groupBy={groupBy} setGroupBy={setGroupBy} activeCluster={activeCluster} setActiveCluster={setActiveCluster} findings={filteredFindings} selectedId={selectedFindingId} setSelectedId={setSelectedFindingId} selectedFinding={selectedFinding} rowRefs={rowRefs} copy={copyText} />}
           {page === "mcp" && <McpPage model={model} target={baseUrl} tokenSet={!!token} mutations={allowMutations} client={mcpClient} setClient={setMcpClient} config={mcpConfig} error={mcpError} busy={mcpBusy} generate={generateMcpConfig} copy={copyText} />}
+          {page === "settings" && <SettingsPage target={targetDraft} setTarget={setTargetDraft} saveTarget={saveTarget} authStatus={authStatus} authMode={authModeDraft} setAuthMode={setAuthModeDraft} header={headerDraft} setHeader={setHeaderDraft} token={tokenDraft} setToken={setTokenDraft} showToken={showToken} setShowToken={setShowToken} authError={authError} clearError={() => setAuthError("")} saveAuth={saveAuth} clearAuth={clearAuth} mutations={allowMutations} setMutations={(value) => { setAllowMutations(value); setMcpConfig(""); }} />}
         </main>
       </div>
       {toast && <div className="toast" role="status"><CheckCircle2 size={16} />{toast}</div>}
@@ -500,6 +478,41 @@ function ImportPage({ specText, setSpecText, error, busy, onFile, onImport, onDe
         <div className="import-actions"><button className="button button-primary" onClick={onImport} disabled={busy}>{busy ? <LoaderCircle className="spin" size={15} /> : <FileCheck2 size={15} />}{busy ? "Validating" : "Validate and import"}<ArrowRight size={15} /></button><button className="button button-quiet" onClick={onDemo} disabled={busy}><Play size={14} />Load demo</button></div>
       </div>
       <aside className="import-aside"><div className="overline">AFTER IMPORT</div><div className="guide-step"><span>01</span><div><strong>Validate the spec</strong><p>Resolve references and check the OpenAPI structure.</p></div><Check size={15} /></div><div className="guide-step"><span>02</span><div><strong>Explore operations</strong><p>Choose a target separately and inspect live responses.</p></div><ArrowRight size={15} /></div><div className="guide-step"><span>03</span><div><strong>Run contract checks</strong><p>Review findings with the request and response evidence.</p></div><ArrowRight size={15} /></div><div className="notice"><CircleAlert size={16} /><span>Plumbline never infers the target URL from the OpenAPI server field.</span></div></aside>
+    </div>
+  </section>;
+}
+
+function SettingsPage(props: {
+  target: string; setTarget: (value: string) => void; saveTarget: () => void;
+  authStatus: AuthStatus; authMode: AuthMode; setAuthMode: (value: AuthMode) => void;
+  header: string; setHeader: (value: string) => void; token: string; setToken: (value: string) => void;
+  showToken: boolean; setShowToken: (value: boolean) => void; authError: string; clearError: () => void;
+  saveAuth: () => void; clearAuth: () => void; mutations: boolean; setMutations: (value: boolean) => void;
+}) {
+  return <section className="page settings-page">
+    <PageHeading eyebrow="WORKSPACE SETTINGS" title="Session settings" subtitle="Configure where requests go, how they authenticate, and which requests may change data." />
+    <div className="settings-layout">
+      <section className="surface settings-card">
+        <div className="settings-card-heading"><span className="settings-icon"><Globe2 size={17} /></span><div><h2>API target</h2><p>Requests and verification runs use this base URL.</p></div></div>
+        <label className="field-label" htmlFor="settings-target">BASE URL</label>
+        <div className="target-editor"><input id="settings-target" value={props.target} onChange={(event) => props.setTarget(event.target.value)} placeholder="http://127.0.0.1:8002" onKeyDown={(event) => { if (event.key === "Enter") props.saveTarget(); }} /><button className="button button-primary" onClick={props.saveTarget}>Save target</button></div>
+        <div className="settings-card-foot"><span className={props.target.trim() ? "configured-dot" : "missing-dot"} />{props.target.trim() ? "Target configured" : "No target configured"}</div>
+      </section>
+
+      <section className="surface settings-card">
+        <div className="settings-card-heading"><span className="settings-icon"><KeyRound size={17} /></span><div><h2>Authentication</h2><p>Credentials stay in this browser session and are masked by default.</p></div><span className={`settings-status auth-${props.authStatus}`}>{props.authStatus === "set" ? "Set" : props.authStatus === "invalid" ? "Invalid" : "Missing"}</span></div>
+        <label className="field-label" htmlFor="settings-auth-mode">AUTH TYPE</label>
+        <select id="settings-auth-mode" value={props.authMode} onChange={(event) => { props.setAuthMode(event.target.value as AuthMode); props.clearError(); }}><option value="bearer">Bearer token</option><option value="apikey">API key</option></select>
+        {props.authMode === "apikey" && <><label className="field-label" htmlFor="settings-header-name">HEADER NAME</label><input id="settings-header-name" value={props.header} onChange={(event) => { props.setHeader(event.target.value); props.clearError(); }} /></>}
+        <label className="field-label" htmlFor="settings-token">TOKEN</label><div className="secret-input"><input id="settings-token" type={props.showToken ? "text" : "password"} value={props.token} onChange={(event) => { props.setToken(event.target.value); props.clearError(); }} placeholder="Paste token" autoComplete="off" /><button className="icon-button" onClick={() => props.setShowToken(!props.showToken)} aria-label={props.showToken ? "Hide token" : "Reveal token"}>{props.showToken ? <EyeOff size={15} /> : <Eye size={15} />}</button></div>
+        {props.authError && <InlineMessage tone="error">{props.authError}</InlineMessage>}
+        <div className="popover-actions"><button className="button button-quiet danger-text" onClick={props.clearAuth}>Clear auth</button><button className="button button-primary" onClick={props.saveAuth}>Save auth</button></div>
+      </section>
+
+      <section className="surface settings-card mutation-settings-card">
+        <div className="settings-card-heading"><span className="settings-icon"><ShieldCheck size={17} /></span><div><h2>State-changing requests</h2><p>Controls POST, PUT, PATCH, and DELETE requests and checks.</p></div></div>
+        <div className="mutation-setting-control"><div><strong>{props.mutations ? "Enabled" : "Off by default"}</strong><span>{props.mutations ? "Requests that can change data are allowed." : "Only read-only requests are allowed."}</span></div><button className={`session-toggle ${props.mutations ? "on" : ""}`} onClick={() => props.setMutations(!props.mutations)} aria-label={props.mutations ? "Turn mutations off" : "Turn mutations on"} aria-pressed={props.mutations}><span /></button></div>
+      </section>
     </div>
   </section>;
 }
@@ -533,9 +546,9 @@ function ExplorerPage(props: {
               <div className="request-tabs">{(["Params", "Body", "Auth", "Headers"] as RequestTab[]).map((tab) => <button key={tab} className={props.requestTab === tab ? "active" : ""} onClick={() => props.setRequestTab(tab)}>{tab}{tab === "Params" && requestParameters.length > 0 && <span>{requestParameters.length}</span>}{tab === "Headers" && headerParameters.length > 0 && <span>{headerParameters.length}</span>}</button>)}</div>
               {props.requestTab === "Params" && <div className="tab-content parameter-grid">{requestParameters.length ? requestParameters.map((parameter) => <ParameterInput key={`${parameter.in}:${parameter.name}`} parameter={parameter} value={props.parameters[parameter.name] ?? ""} onChange={(value) => props.setParameters((current) => ({ ...current, [parameter.name]: value }))} />) : <EmptyInline>No path or query parameters for this endpoint.</EmptyInline>}</div>}
               {props.requestTab === "Body" && <div className="tab-content">{operation.request_schema ? <><div className="body-hint">application/json {operation.request_required ? "· required" : "· optional"}</div><textarea className="body-editor" value={props.body} onChange={(event) => props.setBody(event.target.value)} spellCheck={false} /></> : <EmptyInline>This operation does not define a request body.</EmptyInline>}</div>}
-              {props.requestTab === "Auth" && <div className="tab-content auth-info"><div className={`auth-state auth-${props.authStatus}`}><KeyRound size={16} /><div><strong>Session auth: {props.authStatus}</strong><span>Credential is managed from the global session bar.</span></div><button className="button button-secondary" onClick={props.openAuth}>Edit auth</button></div><p>OpenAPI security: {operation.security.length ? operation.security.join(", ") : "No security requirement for this operation"}</p></div>}
+              {props.requestTab === "Auth" && <div className="tab-content auth-info"><div className={`auth-state auth-${props.authStatus}`}><KeyRound size={16} /><div><strong>Session auth: {props.authStatus}</strong><span>Credential is managed in Settings.</span></div><button className="button button-secondary" onClick={props.openAuth}>Open settings</button></div><p>OpenAPI security: {operation.security.length ? operation.security.join(", ") : "No security requirement for this operation"}</p></div>}
               {props.requestTab === "Headers" && <div className="tab-content parameter-grid">{headerParameters.length ? headerParameters.map((parameter) => <ParameterInput key={`${parameter.in}:${parameter.name}`} parameter={parameter} value={props.parameters[parameter.name] ?? ""} onChange={(value) => props.setParameters((current) => ({ ...current, [parameter.name]: value }))} />) : <EmptyInline>No operation-specific headers.</EmptyInline>}</div>}
-              {isMutation && !props.mutations && <InlineMessage tone="warning">Mutations are off. Turn them on in the session bar to send this request.</InlineMessage>}
+              {isMutation && !props.mutations && <InlineMessage tone="warning">Mutations are off. Turn them on in Settings to send this request.</InlineMessage>}
               {props.requestError && <InlineMessage tone="error">{props.requestError}</InlineMessage>}
               <div className="request-foot"><ShieldCheck size={13} />Requests go through the local Plumbline backend.</div>
             </section>
@@ -585,7 +598,7 @@ function RunsPage(props: {
   return <section className="page runs-page">
     <PageHeading eyebrow="RUNS" title="Run analysis" subtitle="Understand the outcome first, then drill into the evidence that explains it." action={model && <button className="button button-primary" onClick={props.run} disabled={props.runBusy}>{props.runBusy ? <LoaderCircle size={15} className="spin" /> : <Play size={15} />}{props.runBusy ? "Running checks" : "Run checks"}</button>} />
     {!model ? <EmptyState title="Import an API before running checks" action="Go to import" /> : <>
-      <div className="run-config surface"><div className="run-config-copy"><div className="heading-icon"><Settings2 size={16} /></div><div><strong>Run configuration</strong><span>Target, auth, and mutation mode come from the session bar.</span></div><span className={`mutation-inline ${props.mutations ? "on" : "off"}`}>Mutations {props.mutations ? "On" : "Off"}</span></div><div className="run-options"><label className="field-label" htmlFor="role-config">ROLE CONFIGURATION <span>OPTIONAL JSON ARRAY</span></label><textarea id="role-config" className="roles-editor" value={props.roles} onChange={(event) => props.setRoles(event.target.value)} placeholder={'[{"name":"viewer","token":"...","allowed_operation_ids":["list_items"]}]'} /></div>{props.runError && <InlineMessage tone="error">{props.runError}</InlineMessage>}<div className="run-config-actions"><span className="muted"><ShieldCheck size={13} />Mutations are controlled in the session bar.</span><button className="button button-primary" onClick={props.run} disabled={props.runBusy}>{props.runBusy ? <LoaderCircle size={14} className="spin" /> : <Play size={14} />}{props.runBusy ? "Running checks" : "Run checks"}<ArrowRight size={14} /></button></div></div>
+      <div className="run-config surface"><div className="run-config-copy"><div className="heading-icon"><Settings2 size={16} /></div><div><strong>Run configuration</strong><span>Target, auth, and mutation mode are managed in Settings.</span></div><span className={`mutation-inline ${props.mutations ? "on" : "off"}`}>Mutations {props.mutations ? "On" : "Off"}</span></div><div className="run-options"><label className="field-label" htmlFor="role-config">ROLE CONFIGURATION <span>OPTIONAL JSON ARRAY</span></label><textarea id="role-config" className="roles-editor" value={props.roles} onChange={(event) => props.setRoles(event.target.value)} placeholder={'[{"name":"viewer","token":"...","allowed_operation_ids":["list_items"]}]'} /></div>{props.runError && <InlineMessage tone="error">{props.runError}</InlineMessage>}<div className="run-config-actions"><span className="muted"><ShieldCheck size={13} />Mutation safety is controlled in Settings.</span><button className="button button-primary" onClick={props.run} disabled={props.runBusy}>{props.runBusy ? <LoaderCircle size={14} className="spin" /> : <Play size={14} />}{props.runBusy ? "Running checks" : "Run checks"}<ArrowRight size={14} /></button></div></div>
       {props.report && props.summary && <>
         <section className="run-overview">
           <div className="verdict-row"><div><div className="overline">LATEST RUN · {props.report.run_id.slice(0, 10)}</div><h2>{props.summary.verdict}</h2></div><a className="button button-secondary" href={`${API}/runs/${props.report.run_id}/report.html`} target="_blank" rel="noreferrer"><ArrowDownToLine size={14} />HTML report</a></div>
