@@ -120,7 +120,6 @@ input, select, textarea { color: var(--text); }
 .sidebar-collapsed .main-content { width: calc(100% - 64px); }
 .page { max-width: 1600px; min-height: calc(100vh - 128px); margin: 0 auto; }
 .page-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 2px 0 24px; }
-.page-heading h1 { margin: 0; color: var(--text); font-size: 28px; font-weight: 620; letter-spacing: -.7px; }
 .settings-layout { display: grid; max-width: 920px; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 14px; }
 .settings-card { min-width: 0; padding: 20px; }
 .settings-card-heading { display: flex; align-items: flex-start; gap: 12px; }
@@ -142,7 +141,7 @@ input, select, textarea { color: var(--text); }
 .mutation-setting-control > div { display: grid; gap: 5px; }
 .mutation-setting-control strong { font-size: 13px; font-weight: 550; }
 .mutation-setting-control > div > span { color: var(--muted); font-size: 12px; }
-.page-heading p { margin: 7px 0 0; color: var(--subtle); font-size: 14px; line-height: 1.5; }
+.page-heading p { margin: 0; color: var(--subtle); font-size: 14px; line-height: 1.5; }
 .heading-action { flex: 0 0 auto; }
 .surface { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
 .import-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; }
@@ -442,7 +441,6 @@ input, select, textarea { color: var(--text); }
   .nav-label { display: none; }
   .main-content, .sidebar-collapsed .main-content { width: 100%; padding: 20px 12px 76px; }
   .page-heading { align-items: flex-start; }
-  .page-heading h1 { font-size: 23px; }
   .page-heading p { font-size: 13px; }
   .import-grid, .explorer-layout, .endpoints-collapsed .explorer-layout, .overview-grid, .mcp-layout { grid-template-columns: 1fr; }
   .endpoint-browser { position: static; min-height: 300px; max-height: 400px; }
