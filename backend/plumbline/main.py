@@ -71,7 +71,7 @@ async def get_model() -> ApiModel:
 
 @app.get("/api/mcp-config")
 async def get_mcp_config(spec_path: str, base_url: AnyHttpUrl) -> dict:
-    """Return a Claude Desktop/Cursor MCP configuration for an explicit target."""
+    """Return a stdio MCP server configuration for an explicit target."""
     project_path = Path(__file__).resolve().parents[2]
     local_uv = project_path / ".venv" / "bin" / "uv"
     uv_command = shutil.which("uv") or (str(local_uv) if local_uv.is_file() else "uv")
