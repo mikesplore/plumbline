@@ -436,6 +436,8 @@ function App() {
   return (
     <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <header className="session-bar">
+        <div className="header-api-title"><strong>{model?.title ?? "No API loaded"}</strong><span>{model ? `v${model.version}` : "Import a contract"}</span></div>
+        <span className="header-divider" />
         <nav className="header-breadcrumb" aria-label="Current page"><span>PLUMBLINE</span><ChevronRight size={14} /><strong>{page === "import" ? "CONTRACT" : page.toUpperCase()}</strong></nav>
         <span className={`session-chip last-run-chip run-${lastRunStatus}`}><span className="status-glyph">{lastRunStatus === "good" ? "✓" : lastRunStatus === "bad" ? "!" : lastRunStatus === "inconclusive" ? "?" : "—"}</span><span className="chip-label">Last run</span><strong>{lastRunStatus === "good" ? "Good" : lastRunStatus === "bad" ? "Needs attention" : lastRunStatus === "inconclusive" ? "Inconclusive" : "Not run"}</strong></span>
         <div className="session-right"><button className="button button-primary header-ai" onClick={() => setPage("mcp")}><Braces size={15} />Use with AI client</button></div>

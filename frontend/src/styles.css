@@ -35,6 +35,10 @@ code, pre, .mono { font-family: var(--mono); }
 
 .app-shell { min-height: 100vh; }
 .session-bar { position: sticky; z-index: 10; top: 0; display: flex; min-height: 64px; align-items: center; gap: 16px; padding: 8px 20px; border-bottom: 1px solid var(--border); background: #141720; }
+.header-api-title { display: grid; min-width: 0; gap: 3px; }
+.header-api-title strong { overflow: hidden; max-width: min(260px, 26vw); color: var(--text); font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.header-api-title span { color: var(--muted); font-size: 12px; }
+.header-divider { width: 1px; height: 30px; flex: 0 0 auto; background: var(--border); }
 .header-breadcrumb { display: flex; min-width: 0; align-items: center; gap: 8px; color: var(--muted); font: 11px var(--mono); letter-spacing: .07em; }
 .header-breadcrumb > svg { color: var(--faint); }
 .header-breadcrumb strong { color: var(--text); font-weight: 550; }
@@ -423,6 +427,10 @@ input, select, textarea { color: var(--text); }
 }
 @media (max-width: 680px) {
   .session-bar { min-height: auto; flex-wrap: wrap; gap: 7px; padding: 8px; }
+  .header-api-title { max-width: 40vw; margin-right: auto; }
+  .header-api-title strong { max-width: 40vw; font-size: 12px; }
+  .header-api-title span { font-size: 11px; }
+  .header-divider { display: none; }
   .header-breadcrumb { margin-right: auto; }
   .session-chip { min-height: 32px; }
   .session-right { order: 4; margin-left: auto; }
