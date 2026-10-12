@@ -35,13 +35,11 @@ code, pre, .mono { font-family: var(--mono); }
 
 .app-shell { min-height: 100vh; }
 .session-bar { position: sticky; z-index: 10; top: 0; display: flex; min-height: 64px; align-items: center; gap: 16px; padding: 8px 20px; border-bottom: 1px solid var(--border); background: #141720; }
-.header-api-title { display: grid; min-width: 0; gap: 3px; }
-.header-api-title strong { overflow: hidden; max-width: min(260px, 26vw); color: var(--text); font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.header-api-title span { color: var(--muted); font-size: 12px; }
 .header-divider { width: 1px; height: 30px; flex: 0 0 auto; background: var(--border); }
 .header-breadcrumb { display: flex; min-width: 0; align-items: center; gap: 8px; color: var(--muted); font: 11px var(--mono); letter-spacing: .07em; }
 .header-breadcrumb > svg { color: var(--faint); }
 .header-breadcrumb strong { color: var(--text); font-weight: 550; }
+.header-page-title { overflow: hidden; min-width: 0; margin: 0; color: var(--text); font-size: 18px; font-weight: 600; letter-spacing: -.25px; text-overflow: ellipsis; white-space: nowrap; }
 .heading-icon { display: grid; width: 32px; height: 32px; flex: 0 0 auto; place-items: center; border: 1px solid #405274; border-radius: 8px; background: #202b40; color: var(--accent); }
 .eyebrow { color: var(--muted); font: 11px var(--mono); letter-spacing: .06em; }
 .session-chip { display: inline-flex; min-height: 34px; max-width: 255px; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--raised); color: var(--subtle); font-size: 12px; white-space: nowrap; cursor: pointer; }
@@ -121,7 +119,6 @@ input, select, textarea { color: var(--text); }
 .sidebar-collapsed .main-content { width: calc(100% - 64px); }
 .page { max-width: 1600px; min-height: calc(100vh - 128px); margin: 0 auto; }
 .page-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 2px 0 24px; }
-.page-heading h1 { margin: 0; color: var(--text); font-size: 28px; font-weight: 620; letter-spacing: -.7px; }
 .settings-layout { display: grid; max-width: 920px; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 14px; }
 .settings-card { min-width: 0; padding: 20px; }
 .settings-card-heading { display: flex; align-items: flex-start; gap: 12px; }
@@ -143,7 +140,7 @@ input, select, textarea { color: var(--text); }
 .mutation-setting-control > div { display: grid; gap: 5px; }
 .mutation-setting-control strong { font-size: 13px; font-weight: 550; }
 .mutation-setting-control > div > span { color: var(--muted); font-size: 12px; }
-.page-heading p { margin: 7px 0 0; color: var(--subtle); font-size: 14px; line-height: 1.5; }
+.page-heading p { margin: 0; color: var(--subtle); font-size: 14px; line-height: 1.5; }
 .heading-action { flex: 0 0 auto; }
 .surface { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
 .import-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; }
@@ -427,11 +424,8 @@ input, select, textarea { color: var(--text); }
 }
 @media (max-width: 680px) {
   .session-bar { min-height: auto; flex-wrap: wrap; gap: 7px; padding: 8px; }
-  .header-api-title { max-width: 40vw; margin-right: auto; }
-  .header-api-title strong { max-width: 40vw; font-size: 12px; }
-  .header-api-title span { font-size: 11px; }
-  .header-divider { display: none; }
-  .header-breadcrumb { margin-right: auto; }
+  .header-breadcrumb { flex: 0 0 auto; }
+  .header-page-title { flex: 1; font-size: 15px; }
   .session-chip { min-height: 32px; }
   .session-right { order: 4; margin-left: auto; }
   .last-run-chip { padding: 0 8px; }
@@ -444,7 +438,6 @@ input, select, textarea { color: var(--text); }
   .nav-label { display: none; }
   .main-content, .sidebar-collapsed .main-content { width: 100%; padding: 20px 12px 76px; }
   .page-heading { align-items: flex-start; }
-  .page-heading h1 { font-size: 23px; }
   .page-heading p { font-size: 13px; }
   .import-grid, .explorer-layout, .endpoints-collapsed .explorer-layout, .overview-grid, .mcp-layout { grid-template-columns: 1fr; }
   .endpoint-browser { position: static; min-height: 300px; max-height: 400px; }

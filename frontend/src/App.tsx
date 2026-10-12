@@ -37,6 +37,13 @@ type ResponseTab = "Body" | "Headers" | "Timing";
 
 const API = "/api";
 const DEMO_SPEC_URL = import.meta.env.VITE_DEMO_SPEC_URL ?? "http://127.0.0.1:8001/openapi.json";
+const pageTitles: Record<Page, string> = {
+  import: "Import an API",
+  explorer: "API workspace",
+  runs: "Run analysis",
+  mcp: "Use this API with an AI client",
+  settings: "Session settings",
+};
 const severityOrder: Record<string, number> = { high: 0, medium: 1, low: 2, info: 3 };
 
 function sampleFromSchema(schema?: Record<string, unknown>): unknown {
@@ -436,10 +443,8 @@ function App() {
   return (
     <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <header className="session-bar">
-        <div className="header-api-title"><strong>{model?.title ?? "No API loaded"}</strong><span>{model ? `v${model.version}` : "Import a contract"}</span></div>
-        <span className="header-divider" />
         <nav className="header-breadcrumb" aria-label="Current page"><span>PLUMBLINE</span><ChevronRight size={14} /><strong>{page === "import" ? "CONTRACT" : page.toUpperCase()}</strong></nav>
-        <span className={`session-chip last-run-chip run-${lastRunStatus}`}><span className="status-glyph">{lastRunStatus === "good" ? "✓" : lastRunStatus === "bad" ? "!" : lastRunStatus === "inconclusive" ? "?" : "—"}</span><span className="chip-label">Last run</span><strong>{lastRunStatus === "good" ? "Good" : lastRunStatus === "bad" ? "Needs attention" : lastRunStatus === "inconclusive" ? "Inconclusive" : "Not run"}</strong></span>
+        <h1 className="header-page-title">{pageTitles[page]}</h1>
         <div className="session-right"><button className="button button-primary header-ai" onClick={() => setPage("mcp")}><Braces size={15} />Use with AI client</button></div>
       </header>
 
@@ -468,7 +473,7 @@ function App() {
 
 function ImportPage({ specText, setSpecText, error, busy, onFile, onImport, onDemo }: { specText: string; setSpecText: (value: string) => void; error: string; busy: boolean; onFile: (file?: File) => void; onImport: () => void; onDemo: () => void }) {
   return <section className="page import-page">
-    <PageHeading title="Import an API" subtitle="Load an OpenAPI contract to explore endpoints and verify observed behavior." />
+    <PageHeading subtitle="Load an OpenAPI contract to explore endpoints and verify observed behavior." />
     <div className="import-grid">
       <div className="surface import-surface">
         <div className="surface-heading"><div className="heading-icon"><FileJson2 size={17} /></div><div><h2>OpenAPI document</h2><p>JSON or YAML · OpenAPI 3.x</p></div><label className="button button-secondary file-button"><FileUp size={15} />Choose file<input type="file" accept=".json,.yaml,.yml,application/json,text/yaml" onChange={(event) => onFile(event.target.files?.[0])} /></label></div>
@@ -490,7 +495,7 @@ function SettingsPage(props: {
   saveAuth: () => void; clearAuth: () => void; mutations: boolean; setMutations: (value: boolean) => void;
 }) {
   return <section className="page settings-page">
-    <PageHeading title="Session settings" subtitle="Configure where requests go, how they authenticate, and which requests may change data." />
+    <PageHeading subtitle="Configure where requests go, how they authenticate, and which requests may change data." />
     <div className="settings-layout">
       <section className="surface settings-card">
         <div className="settings-card-heading"><span className="settings-icon"><Globe2 size={17} /></span><div><h2>API target</h2><p>Requests and verification runs use this base URL.</p></div></div>
@@ -530,7 +535,7 @@ function ExplorerPage(props: {
   const headerParameters = operation?.parameters.filter((parameter) => parameter.in === "header") ?? [];
   const isMutation = !!operation && operation.method !== "GET";
   return <section className={`page explorer-page ${props.collapsed ? "endpoints-collapsed" : ""}`}>
-    <PageHeading title="API workspace" subtitle="Select an operation, configure its request, and inspect the response." action={<button className="button button-secondary" onClick={props.openMcp}><Braces size={15} />MCP ready <ChevronRight size={14} /></button>} />
+    <PageHeading subtitle="Select an operation, configure its request, and inspect the response." action={<button className="button button-secondary" onClick={props.openMcp}><Braces size={15} />MCP ready <ChevronRight size={14} /></button>} />
     {!props.model ? <EmptyState title="Import an API contract to begin" action="Go to import" /> : <div className="explorer-layout">
       <aside className="endpoint-browser surface">
         <div className="browser-heading"><div><div className="eyebrow">ENDPOINTS</div><strong>{props.model.title}</strong><span>v{props.model.version} · {props.model.operations.length} operations</span></div><button className="icon-button" onClick={() => props.setCollapsed(true)} aria-label="Collapse endpoint list"><PanelLeftClose size={15} /></button></div>
@@ -596,7 +601,7 @@ function RunsPage(props: {
   }, [props.findings, props.groupBy, operations, props.summary]);
   const counts = props.summary?.counts ?? props.report?.summary ?? {};
   return <section className="page runs-page">
-    <PageHeading title="Run analysis" subtitle="Understand the outcome first, then drill into the evidence that explains it." action={model && <button className="button button-primary" onClick={props.run} disabled={props.runBusy}>{props.runBusy ? <LoaderCircle size={15} className="spin" /> : <Play size={15} />}{props.runBusy ? "Running checks" : "Run checks"}</button>} />
+    <PageHeading subtitle="Understand the outcome first, then drill into the evidence that explains it." action={model && <button className="button button-primary" onClick={props.run} disabled={props.runBusy}>{props.runBusy ? <LoaderCircle size={15} className="spin" /> : <Play size={15} />}{props.runBusy ? "Running checks" : "Run checks"}</button>} />
     {!model ? <EmptyState title="Import an API before running checks" action="Go to import" /> : <>
       <div className="run-config surface"><div className="run-config-copy"><div className="heading-icon"><Settings2 size={16} /></div><div><strong>Run configuration</strong><span>Target, auth, and mutation mode are managed in Settings.</span></div><span className={`mutation-inline ${props.mutations ? "on" : "off"}`}>Mutations {props.mutations ? "On" : "Off"}</span></div><div className="run-options"><label className="field-label" htmlFor="role-config">ROLE CONFIGURATION <span>OPTIONAL JSON ARRAY</span></label><textarea id="role-config" className="roles-editor" value={props.roles} onChange={(event) => props.setRoles(event.target.value)} placeholder={'[{"name":"viewer","token":"...","allowed_operation_ids":["list_items"]}]'} /></div>{props.runError && <InlineMessage tone="error">{props.runError}</InlineMessage>}<div className="run-config-actions"><span className="muted"><ShieldCheck size={13} />Mutation safety is controlled in Settings.</span><button className="button button-primary" onClick={props.run} disabled={props.runBusy}>{props.runBusy ? <LoaderCircle size={14} className="spin" /> : <Play size={14} />}{props.runBusy ? "Running checks" : "Run checks"}<ArrowRight size={14} /></button></div></div>
       {props.report && props.summary && <>
@@ -632,15 +637,15 @@ function McpPage({ model, target, tokenSet, mutations, client, setClient, config
   const mutationMethods = new Set(["POST", "PUT", "PATCH", "DELETE"]);
   const mutationToolCount = model?.operations.filter((operation) => mutationMethods.has(operation.method.toUpperCase())).length ?? 0;
   const readOnly = (model?.operations.length ?? 0) - mutationToolCount;
-  return <section className="page mcp-page"><PageHeading title="Use this API with an AI client" subtitle="Expose the imported contract as MCP tools for local coding assistants." />
+  return <section className="page mcp-page"><PageHeading subtitle="Expose the imported contract as MCP tools for local coding assistants." />
     <div className="surface mcp-intro"><div className="heading-icon"><Braces size={17} /></div><div><strong>What MCP does here</strong><p>Plumbline turns each OpenAPI operation into a tool an MCP client can discover and call against your selected target.</p></div><div className="mcp-target"><span>SESSION TARGET</span><code>{target || "Not set"}</code></div></div>
     {!model ? <EmptyState title="Import an API to generate MCP tools" action="Go to import" /> : <div className="mcp-layout"><div className="surface mcp-config-card"><div className="section-heading"><div><div className="eyebrow">CLIENT CONFIGURATION</div><h2>Connect a client</h2></div><span className="ready-indicator"><span />API loaded</span></div><div className="client-tabs">{(["Claude Desktop", "Cursor"] as const).map((item) => <button key={item} className={client === item ? "active" : ""} onClick={() => setClient(item)}>{item}</button>)}</div><div className="path-note">The configuration embeds the currently imported API model and your session target.</div><div className="mcp-tool-counts"><div><span>READ ONLY</span><strong>{readOnly}</strong><small>GET tools</small></div><div><span>STATE CHANGING</span><strong>{mutationToolCount}</strong><small>POST / PUT / PATCH / DELETE</small></div></div><div className="mcp-token-note"><KeyRound size={15} /><span>{tokenSet ? "The config references PLUMBLINE_TOKEN from the client environment. The token itself is never included." : "No session token set. The MCP server will connect without configured auth."}</span></div>{error && <InlineMessage tone="error">{error}</InlineMessage>}<div className="mcp-actions"><button className="button button-primary" onClick={generate} disabled={busy}>{busy ? <LoaderCircle size={14} className="spin" /> : <Braces size={14} />}Generate {client} config</button><button className="button button-secondary" disabled title="Requires local MCP process support."><Activity size={14} />Test connection</button></div></div>
       <div className="surface generated-config"><div className="section-heading"><div><div className="eyebrow">GENERATED CONFIG</div><h2>{config ? "Ready to paste" : "Configuration preview"}</h2></div>{config && <button className="icon-button" onClick={() => copy(config, "Config copied")} aria-label="Copy MCP configuration"><Copy size={15} /></button>}</div>{config ? <pre>{config}</pre> : <div className="config-placeholder"><Braces size={24} /><strong>Config appears here</strong><span>Choose a client and generate its MCP server configuration.</span></div>}<div className={`readonly-note ${mutations ? "mutations-enabled" : ""}`}><ShieldCheck size={14} />{mutations ? "State-changing tools are enabled in this config." : "State-changing tools are blocked by default by the MCP server."}</div></div></div>}
   </section>;
 }
 
-function PageHeading({ title, subtitle, action }: { title: string; subtitle: string; action?: React.ReactNode }) {
-  return <div className="page-heading"><div><h1>{title}</h1><p>{subtitle}</p></div>{action && <div className="heading-action">{action}</div>}</div>;
+function PageHeading({ subtitle, action }: { subtitle: string; action?: React.ReactNode }) {
+  return <div className="page-heading"><div><p>{subtitle}</p></div>{action && <div className="heading-action">{action}</div>}</div>;
 }
 
 function InlineMessage({ children, tone }: { children: React.ReactNode; tone: "error" | "warning" }) {
