@@ -11,6 +11,7 @@ class Operation(BaseModel):
     method: str
     path: str
     summary: str = ""
+    tags: list[str] = Field(default_factory=list)
     parameters: list[dict] = Field(default_factory=list)
     request_schema: dict | None = None
     request_required: bool = False

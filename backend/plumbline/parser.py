@@ -98,6 +98,7 @@ def parse_openapi(spec_text: str) -> ApiModel:
                 method=method.upper(),
                 path=path,
                 summary=operation.get("summary") or operation.get("description") or "",
+                tags=list(operation.get("tags") or []),
                 parameters=[dict(p) for p in parameters if isinstance(p, Mapping)],
                 request_schema=_schema_from_content(request_body.get("content")),
                 request_required=bool(request_body.get("required", False)),

@@ -3,14 +3,16 @@
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
+from urllib.parse import quote
 from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from pydantic import AnyHttpUrl, BaseModel, model_validator
+from pydantic import AnyHttpUrl, BaseModel, Field, model_validator
 
-from plumbline.models import ApiModel, Finding, RunConfig, RunReport
+from plumbline.models import ApiModel, AuthConfig, Finding, RunConfig, RunReport
 from plumbline.parser import SpecValidationError, parse_openapi
 from plumbline.report import render_html
 from plumbline.runner import run_checks
@@ -28,6 +30,14 @@ class ImportRequest(BaseModel):
         if (self.spec is None) == (self.url is None):
             raise ValueError("provide exactly one of 'spec' or 'url'")
         return self
+
+
+class ExplorerRequest(BaseModel):
+    operation_id: str
+    base_url: AnyHttpUrl
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    body: Any = None
+    auth: AuthConfig | None = None
 
 
 @app.post("/api/import", response_model=ApiModel)
@@ -81,6 +91,63 @@ async def get_mcp_config(spec_path: str, base_url: AnyHttpUrl) -> dict:
         }
     }
     return config
+
+
+@app.post("/api/explorer/request")
+async def send_explorer_request(request: ExplorerRequest) -> dict:
+    api_model = getattr(app.state, "api_model", None)
+    if api_model is None:
+        raise HTTPException(status_code=409, detail="Import an API contract before exploring operations")
+    operation = next((item for item in api_model.operations if item.id == request.operation_id), None)
+    if operation is None:
+        raise HTTPException(status_code=404, detail="Operation not found in the imported contract")
+
+    path = operation.path
+    query: list[tuple[str, Any]] = []
+    headers: dict[str, str] = {}
+    for parameter in operation.parameters:
+        name = parameter.get("name")
+        location = parameter.get("in")
+        if name not in request.parameters:
+            continue
+        value = request.parameters[name]
+        if location == "path":
+            path = path.replace("{" + name + "}", quote(str(value), safe=""))
+        elif location == "query":
+            if isinstance(value, list):
+                query.extend((name, item) for item in value)
+            else:
+                query.append((name, value))
+        elif location == "header":
+            headers[name] = str(value)
+    if "{" in path or "}" in path:
+        raise HTTPException(status_code=422, detail="A required path parameter is missing")
+
+    if request.auth is not None:
+        for scheme_name in operation.security:
+            scheme = api_model.security_schemes.get(scheme_name, {})
+            if scheme.get("type") == "http" and scheme.get("scheme", "").lower() == "bearer":
+                headers["Authorization"] = f"Bearer {request.auth.token}"
+            elif scheme.get("type") == "apiKey" and scheme.get("in") == "header":
+                headers[scheme.get("name") or request.auth.header_name] = request.auth.token
+            elif scheme.get("type") == "apiKey" and scheme.get("in") == "query":
+                query.append((scheme.get("name", "api_key"), request.auth.token))
+
+    request_kwargs: dict[str, Any] = {"params": query, "headers": headers}
+    if operation.request_schema is not None and request.body is not None:
+        request_kwargs["json"] = request.body
+    target_url = f"{str(request.base_url).rstrip('/')}/{path.lstrip('/')}"
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.request(operation.method, target_url, **request_kwargs)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Request failed: {exc}") from exc
+    return {
+        "status": response.status_code,
+        "url": str(response.url),
+        "headers": dict(response.headers),
+        "body": response.text,
+    }
 
 
 async def _execute_run(run_id: str, config: RunConfig) -> None:
