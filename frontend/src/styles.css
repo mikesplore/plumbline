@@ -120,7 +120,7 @@ input, select, textarea { color: var(--text); }
 .sidebar-collapsed .main-content { width: calc(100% - 64px); }
 .page { max-width: 1600px; min-height: calc(100vh - 128px); margin: 0 auto; }
 .page-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 2px 0 24px; }
-.settings-layout { display: grid; max-width: 920px; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 14px; }
+.settings-layout { display: grid; max-width: 1280px; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; gap: 14px; }
 .settings-card { min-width: 0; padding: 20px; }
 .settings-card-heading { display: flex; align-items: flex-start; gap: 12px; }
 .settings-card-heading > div { min-width: 0; flex: 1; }
@@ -136,7 +136,7 @@ input, select, textarea { color: var(--text); }
 .settings-card-foot { display: flex; align-items: center; gap: 7px; margin-top: 12px; color: var(--muted); font-size: 12px; }
 .configured-dot, .missing-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--pass); }
 .missing-dot { background: var(--warn); }
-.mutation-settings-card { grid-column: 1 / -1; }
+.mutation-settings-card { grid-column: auto; }
 .mutation-setting-control { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
 .mutation-setting-control > div { display: grid; gap: 5px; }
 .mutation-setting-control strong { font-size: 13px; font-weight: 550; }
@@ -404,6 +404,8 @@ input, select, textarea { color: var(--text); }
   .main-content { padding-right: 20px; padding-left: 20px; }
   .overview-grid { grid-template-columns: 1fr 1fr; }
   .overview-card:last-child { grid-column: span 2; }
+  .settings-layout { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mutation-settings-card { grid-column: 1 / -1; }
 }
 @media (max-width: 960px) {
   .session-bar { flex-wrap: wrap; gap: 7px; }
