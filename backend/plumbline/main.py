@@ -2,6 +2,7 @@
 
 import asyncio
 import shutil
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -19,8 +20,23 @@ from plumbline.parser import SpecValidationError, parse_openapi
 from plumbline.report import render_html
 from plumbline.runner import run_checks
 
-app = FastAPI(title="Plumbline", version="0.1.0")
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+SPEC_PATH = PROJECT_DIR / ".plumbline" / "current-openapi.txt"
 RUNS_DIR = Path("runs")
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    if SPEC_PATH.is_file():
+        try:
+            application.state.api_model = parse_openapi(SPEC_PATH.read_text(encoding="utf-8"))
+        except (OSError, SpecValidationError):
+            # A missing or damaged saved contract should not prevent the API from starting.
+            pass
+    yield
+
+
+app = FastAPI(title="Plumbline", version="0.1.0", lifespan=lifespan)
 
 
 class ImportRequest(BaseModel):
@@ -57,6 +73,14 @@ async def import_spec(request: ImportRequest) -> ApiModel:
         model = parse_openapi(spec_text or "")
     except SpecValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    saved_spec = SPEC_PATH.with_suffix(f"{SPEC_PATH.suffix}.tmp")
+    try:
+        SPEC_PATH.parent.mkdir(parents=True, exist_ok=True)
+        saved_spec.write_text(spec_text or "", encoding="utf-8")
+        saved_spec.replace(SPEC_PATH)
+    except OSError as exc:
+        saved_spec.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Unable to save the imported OpenAPI document: {exc}") from exc
     app.state.api_model = model
     return model
 

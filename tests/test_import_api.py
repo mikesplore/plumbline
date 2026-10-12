@@ -9,8 +9,11 @@ from plumbline.main import app
 client = TestClient(app)
 
 
-def test_import_demo_openapi_and_get_normalized_model():
-    response = client.post("/api/import", json={"spec": json.dumps(demo_app.openapi())})
+def test_import_demo_openapi_and_get_normalized_model(monkeypatch, tmp_path):
+    saved_spec = tmp_path / "current-openapi.txt"
+    monkeypatch.setattr("plumbline.main.SPEC_PATH", saved_spec)
+    source = json.dumps(demo_app.openapi())
+    response = client.post("/api/import", json={"spec": source})
 
     assert response.status_code == 200
     model = response.json()
@@ -25,6 +28,20 @@ def test_import_demo_openapi_and_get_normalized_model():
     loaded = client.get("/api/model")
     assert loaded.status_code == 200
     assert loaded.json() == model
+    assert saved_spec.read_text(encoding="utf-8") == source
+
+
+def test_saved_contract_is_restored_when_backend_starts(monkeypatch, tmp_path):
+    saved_spec = tmp_path / "current-openapi.txt"
+    saved_spec.write_text(json.dumps(demo_app.openapi()), encoding="utf-8")
+    monkeypatch.setattr("plumbline.main.SPEC_PATH", saved_spec)
+    app.state.api_model = None
+
+    with TestClient(app) as restarted_client:
+        response = restarted_client.get("/api/model")
+
+    assert response.status_code == 200
+    assert response.json()["title"] == "Plumbline Demo API"
 
 
 def test_import_invalid_spec_returns_readable_422():
