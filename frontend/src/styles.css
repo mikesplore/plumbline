@@ -41,7 +41,7 @@ code, pre, .mono { font-family: var(--mono); }
 .brand-name span { color: var(--accent); }
 .header-divider { width: 1px; height: 30px; background: var(--border); }
 .session-context { display: grid; min-width: 120px; grid-template-columns: auto auto; align-items: baseline; gap: 1px 8px; }
-.session-caption, .current-area > span, .overline { color: var(--muted); font: 11px var(--mono); letter-spacing: .06em; }
+.session-caption, .current-area > span, .eyebrow { color: var(--muted); font: 11px var(--mono); letter-spacing: .06em; }
 .session-context strong { overflow: hidden; max-width: min(240px, 20vw); font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .version-label { grid-column: 2; color: var(--muted); font-size: 12px; }
 .session-chip { display: inline-flex; min-height: 34px; max-width: 255px; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--raised); color: var(--subtle); font-size: 12px; white-space: nowrap; cursor: pointer; }
@@ -121,7 +121,7 @@ input, select, textarea { color: var(--text); }
 .sidebar-collapsed .main-content { width: calc(100% - 64px); }
 .page { max-width: 1600px; min-height: calc(100vh - 128px); margin: 0 auto; }
 .page-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 2px 0 24px; }
-.page-heading .overline, .overline { color: var(--muted); font: 11px var(--mono); letter-spacing: .07em; }
+.page-heading .eyebrow, .eyebrow { color: var(--muted); font: 11px var(--mono); letter-spacing: .07em; }
 .page-heading h1 { margin: 7px 0 0; color: var(--text); font-size: 28px; font-weight: 620; letter-spacing: -.7px; }
 .settings-layout { display: grid; max-width: 920px; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 14px; }
 .settings-card { min-width: 0; padding: 20px; }
@@ -161,7 +161,7 @@ input, select, textarea { color: var(--text); }
 .editor-foot span:first-child { display: flex; align-items: center; gap: 7px; }
 .import-actions { display: flex; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--border-low); }
 .import-aside { display: grid; align-content: start; gap: 8px; }
-.import-aside > .overline { padding: 8px 2px; }
+.import-aside > .eyebrow { padding: 8px 2px; }
 .guide-step { display: grid; grid-template-columns: 34px 1fr 18px; align-items: center; gap: 10px; min-height: 84px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
 .guide-step > span { display: grid; width: 30px; height: 30px; place-items: center; border: 1px solid var(--border); border-radius: 8px; color: var(--accent); font: 12px var(--mono); }
 .guide-step strong { font-size: 13px; font-weight: 570; }
