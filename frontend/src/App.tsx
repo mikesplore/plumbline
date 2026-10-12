@@ -3,7 +3,7 @@ import {
   Activity, AlertTriangle, ArrowDownToLine, ArrowRight, Braces, Check, CheckCircle2,
   ChevronDown, ChevronRight, CircleAlert, Clipboard, Code2, Copy,
   Eye, EyeOff, FileCheck2, FileJson2, FileUp, FlaskConical, Globe2, KeyRound,
-  LoaderCircle, LockKeyhole, PanelLeftClose, PanelLeftOpen,
+  LoaderCircle, PanelLeftClose, PanelLeftOpen,
   Play, Search, Send, Settings2, ShieldCheck, Terminal, X,
 } from "lucide-react";
 
@@ -167,6 +167,14 @@ function App() {
   const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
 
   const selectedOperation = model?.operations.find((operation) => operation.id === selectedOperationId) ?? null;
+
+  useEffect(() => {
+    if (!selectedOperation) return;
+    const hasParameters = selectedOperation.parameters.some((parameter) => ["path", "query"].includes(parameter.in));
+    setRequestTab(hasParameters ? "Params" : selectedOperation.request_schema ? "Body" : "Params");
+    setRequestError("");
+    setResponsePayload(null);
+  }, [selectedOperationId, model]);
 
   const operationGroups = useMemo(() => {
     const groups = new Map<string, Operation[]>();
@@ -544,7 +552,7 @@ function ExplorerPage(props: {
       </aside>
       <div className="workspace-column">{props.collapsed && <button className="button button-quiet expand-endpoints" onClick={() => props.setCollapsed(false)}><PanelLeftOpen size={15} />Show endpoints</button>}
         {operation ? <>
-          <div className="operation-summary surface"><div className="crumb">{operationTag(operation)}<ChevronRight size={13} />{operation.id}</div><div className="operation-title"><MethodBadge method={operation.method} /><h2>{operation.path}</h2><button className="icon-button" onClick={() => props.copy(operation.path, "Path copied")} aria-label="Copy endpoint path"><Copy size={14} /></button></div><p>{operation.summary || "No operation description."}</p><div className="operation-meta"><span><LockKeyhole size={12} />{operation.security.length ? "Auth required by spec" : "No auth declared"}</span><span>{operation.parameters.length} parameters</span><span className={`mcp-ready ${props.model ? "ready" : ""}`}><Braces size={12} />MCP tools ready</span></div></div>
+          <div className="operation-summary surface"><div className="operation-title"><MethodBadge method={operation.method} /><h2>{operation.path}</h2><button className="icon-button" onClick={() => props.copy(operation.path, "Path copied")} aria-label="Copy endpoint path"><Copy size={14} /></button></div>{operation.summary && <p>{operation.summary}</p>}</div>
           <div className="workbench-grid">
             <section className="surface request-card">
               <div className="card-title-row"><div><span className="step-number">01</span><h3>Request</h3></div><button className="button button-secondary send-button" onClick={props.send} disabled={props.requestBusy || (isMutation && !props.mutations)}>{props.requestBusy ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}Send request</button></div>

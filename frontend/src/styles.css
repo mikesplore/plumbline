@@ -199,13 +199,9 @@ input, select, textarea { color: var(--text); }
 .workspace-column { display: grid; min-width: 0; gap: 12px; }
 .expand-endpoints { justify-self: start; }
 .operation-summary { padding: 15px 17px; }
-.crumb { display: flex; align-items: center; gap: 5px; color: var(--muted); font: 12px var(--mono); }
-.operation-title { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.operation-title { display: flex; align-items: center; gap: 10px; }
 .operation-title h2 { min-width: 0; overflow-wrap: anywhere; margin: 0; color: var(--text); font: 18px var(--mono); }
 .operation-summary > p { margin: 9px 0 0 64px; color: var(--subtle); font-size: 13px; }
-.operation-meta { display: flex; flex-wrap: wrap; gap: 14px; margin: 14px 0 0 64px; color: var(--muted); font-size: 12px; }
-.operation-meta > span { display: inline-flex; align-items: center; gap: 5px; }
-.mcp-ready.ready { color: var(--accent); }
 .workbench-grid { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(300px, .95fr); gap: 12px; align-items: stretch; }
 .request-card, .response-card { min-width: 0; overflow: hidden; }
 .card-title-row { display: flex; min-height: 52px; align-items: center; justify-content: space-between; gap: 10px; padding: 0 14px; border-bottom: 1px solid var(--border-low); }
