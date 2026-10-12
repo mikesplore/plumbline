@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import os
 import socket
@@ -13,16 +14,16 @@ from fastapi.testclient import TestClient
 
 from demo_api.main import app as demo_app, reset_demo_state
 from plumbline.main import app
+from plumbline.parser import parse_openapi
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.asyncio
-async def test_stdio_mcp_lists_tools_calls_demo_and_validates_args(tmp_path):
+async def test_stdio_mcp_lists_tools_calls_demo_and_validates_args():
     reset_demo_state()
-    spec_path = tmp_path / "openapi.json"
-    spec_path.write_text(json.dumps(demo_app.openapi()), encoding="utf-8")
+    api_model = parse_openapi(json.dumps(demo_app.openapi()))
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -45,8 +46,8 @@ async def test_stdio_mcp_lists_tools_calls_demo_and_validates_args(tmp_path):
             args=[
                 "-m",
                 "plumbline.mcp_server",
-                "--spec",
-                str(spec_path),
+                "--model-base64",
+                base64.urlsafe_b64encode(api_model.model_dump_json().encode()).decode(),
                 "--base-url",
                 f"http://127.0.0.1:{port}",
             ],
@@ -61,7 +62,7 @@ async def test_stdio_mcp_lists_tools_calls_demo_and_validates_args(tmp_path):
                 tool_names = set(tools_by_name)
                 assert "list_items" in tool_names
                 assert "create_item" in tool_names
-                assert tools_by_name["get_item"].inputSchema["required"] == ["id"]
+                assert tools_by_name["get_item"].input_schema["required"] == ["id"]
 
                 result = await session.call_tool("list_items", {})
                 payload = json.loads(result.content[0].text)
@@ -74,15 +75,15 @@ async def test_stdio_mcp_lists_tools_calls_demo_and_validates_args(tmp_path):
                 assert "Notebook" in item_payload["body"]
 
                 invalid = await session.call_tool("list_items", {"unexpected": True})
-                assert invalid.isError
+                assert invalid.is_error
                 assert "validation" in invalid.content[0].text.lower()
 
                 missing_body = await session.call_tool("create_item", {})
-                assert missing_body.isError
+                assert missing_body.is_error
                 assert "validation" in missing_body.content[0].text.lower()
 
                 mutation = await session.call_tool("create_item", {"body": {"name": "New"}})
-                assert mutation.isError
+                assert mutation.is_error
                 assert "disabled" in mutation.content[0].text.lower()
     finally:
         api_server.should_exit = True
@@ -99,7 +100,7 @@ def test_mcp_config_requires_explicit_base_url_and_returns_pasteable_config(tmp_
     assert response.status_code == 200
     config = response.json()
     server = config["mcpServers"]["plumbline"]
-    assert server["command"] == "uv"
+    assert Path(server["command"]).name == "uv"
     assert "plumbline.mcp_server" in server["args"]
     assert str(spec_path) in server["args"]
     assert "https://api.example.test/v1" in server["args"]

@@ -2,7 +2,9 @@
 
 import argparse
 import asyncio
+import base64
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -10,13 +12,14 @@ from urllib.parse import quote
 
 import httpx
 import jsonschema
-from mcp.server import InitializationOptions, Server
-from mcp.server.lowlevel.server import NotificationOptions
+from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import CallToolResult, TextContent, Tool
+from mcp.types import CallToolRequestParams, CallToolResult, ListToolsResult, TextContent, Tool
 
 from plumbline.models import ApiModel, Operation
 from plumbline.parser import parse_openapi
+
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
 def _tool_name(operation_id: str) -> str:
@@ -105,21 +108,19 @@ def create_server(
 ) -> Server:
     """Create an MCP server whose tools map directly to contract operations."""
     tools_by_name = _unique_names(api_model)
-    server = Server(api_model.title, version=api_model.version or "0.1.0")
-
-    @server.list_tools()
-    async def list_tools() -> list[Tool]:
-        return [
+    async def list_tools(_context, _params) -> ListToolsResult:
+        return ListToolsResult(tools=[
             Tool(
                 name=name,
                 description=f"{operation.method} {operation.path}: {operation.summary}".strip(),
                 inputSchema=_input_schema(operation),
             )
             for name, operation in tools_by_name.items()
-        ]
+        ])
 
-    @server.call_tool(validate_input=False)
-    async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
+    async def call_tool(_context, params: CallToolRequestParams) -> CallToolResult:
+        name = params.name
+        arguments = params.arguments or {}
         operation = tools_by_name.get(name)
         if operation is None:
             return CallToolResult(
@@ -132,7 +133,7 @@ def create_server(
                 content=[TextContent(type="text", text=f"Input validation error: {exc.message}")],
                 isError=True,
             )
-        if operation.method.upper() != "GET" and not allow_mutations:
+        if operation.method.upper() not in SAFE_METHODS and not allow_mutations:
             return CallToolResult(
                 content=[TextContent(type="text", text="State-changing tools are disabled. Start the server with --allow-mutations to enable them.")],
                 isError=True,
@@ -160,32 +161,51 @@ def create_server(
                 content=[TextContent(type="text", text=f"Request failed: {exc}")], isError=True
             )
 
-    return server
+    return Server(
+        api_model.title,
+        version=api_model.version or "0.1.0",
+        on_list_tools=list_tools,
+        on_call_tool=call_tool,
+    )
 
 
 async def _run(args: argparse.Namespace) -> None:
-    spec_text = Path(args.spec).read_text(encoding="utf-8")
-    api_model = parse_openapi(spec_text)
-    server = create_server(api_model, args.base_url, args.token, args.allow_mutations)
+    if args.model_base64:
+        try:
+            encoded_model = "".join(args.model_base64)
+            model_json = base64.urlsafe_b64decode(encoded_model.encode("ascii"))
+            api_model = ApiModel.model_validate_json(model_json)
+        except (ValueError, UnicodeError) as exc:
+            raise SystemExit(f"Invalid encoded API model: {exc}") from exc
+    else:
+        spec_text = Path(args.spec).read_text(encoding="utf-8")
+        api_model = parse_openapi(spec_text)
+    token = args.token
+    if args.token_env:
+        token = os.environ.get(args.token_env)
+        if token is None:
+            raise SystemExit(f"Environment variable {args.token_env} is not set")
+    server = create_server(api_model, args.base_url, token, args.allow_mutations)
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,
             write_stream,
-            InitializationOptions(
-                server_name=api_model.title,
-                server_version=api_model.version or "0.1.0",
-                capabilities=server.get_capabilities(
-                    notification_options=NotificationOptions(), experimental_capabilities={}
-                ),
-            ),
+            server.create_initialization_options(),
         )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Serve an OpenAPI contract as MCP tools")
-    parser.add_argument("--spec", required=True, help="Path to an OpenAPI JSON or YAML document")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--spec", help="Path to an OpenAPI JSON or YAML document")
+    source.add_argument(
+        "--model-base64",
+        action="append",
+        help="URL-safe base64 chunk of the imported ApiModel JSON; repeat for large models",
+    )
     parser.add_argument("--base-url", required=True, help="Explicit target API base URL")
     parser.add_argument("--token", help="Bearer or header API key token for secured operations")
+    parser.add_argument("--token-env", help="Read the token from this environment variable")
     parser.add_argument("--allow-mutations", action="store_true", help="Enable non-GET operations")
     args = parser.parse_args()
     asyncio.run(_run(args))

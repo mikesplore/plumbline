@@ -38,10 +38,14 @@ def test_run_status_json_and_html_report_endpoints(monkeypatch, tmp_path):
 
         assert status.json()["summary"] == {"pass": 1, "fail": 0, "inconclusive": 0}
         report = client.get(f"/api/runs/{run_id}/report.json")
+        summary = client.get(f"/api/runs/{run_id}/summary")
         html = client.get(f"/api/runs/{run_id}/report.html")
 
     assert report.status_code == 200
     assert report.json()["run_id"] == run_id
+    assert summary.status_code == 200
+    assert summary.json()["counts"] == {"fail": 0, "inconclusive": 0, "pass": 1}
+    assert summary.json()["verdict"].startswith("0 failed, 0 inconclusive, 1 passed across ")
     assert html.status_code == 200
-    assert "Plumbline run report" in html.text
+    assert "Run analysis" in html.text
     assert (tmp_path / f"{run_id}.json").exists()

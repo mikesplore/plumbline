@@ -41,9 +41,11 @@ def test_html_report_groups_findings_and_shows_reproduction_and_evidence():
 
     html = render_html(report)
 
-    assert "2 total" in html
-    assert html.index("high severity") < html.index("low severity")
-    assert "How to reproduce with curl" in html
+    assert "1 failed, 0 inconclusive, 1 passed across 2 operations" in html
+    assert html.index("Needs attention") < html.index("Failed findings")
+    assert html.index("Failed findings") < html.index("Inconclusive findings")
+    assert html.index("Inconclusive findings") < html.index("Passed findings")
+    assert "Reproduce with curl" in html
     assert "curl --include" in html
     assert "Authorization: [REDACTED]" in html
     assert "application/json" in html

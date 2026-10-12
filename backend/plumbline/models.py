@@ -1,9 +1,10 @@
 """Shared API contract and test report models."""
 
 from datetime import datetime
+from hashlib import sha256
 from typing import Any, Literal
 
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator
 
 
 class Operation(BaseModel):
@@ -51,8 +52,20 @@ class Finding(BaseModel):
     operation_id: str | None = None
     expected: str = ""
     observed: str = ""
+    cluster_key: str = ""
+    variant: str | None = None
     request: RequestEvidence | None = None
     response: ResponseEvidence | None = None
+
+    @model_validator(mode="after")
+    def assign_cluster_key(self):
+        if not self.cluster_key:
+            signature = "\n".join(
+                " ".join(value.casefold().split())
+                for value in (self.check, self.expected, self.observed)
+            )
+            self.cluster_key = sha256(signature.encode("utf-8")).hexdigest()[:16]
+        return self
 
 
 class RunReport(BaseModel):

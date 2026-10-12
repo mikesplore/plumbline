@@ -15,7 +15,10 @@ async def run(api_model: ApiModel, config: RunConfig, client: httpx.AsyncClient)
         if operation.method not in SAFE_METHODS and not config.allow_mutations:
             findings.append(make_finding("auth", operation, "inconclusive", "allow_mutations enabled", "state-changing authorization probes are disabled", severity="info"))
             continue
-        for mode, token, label in (("none", None, "no credentials"), ("configured", "invalid-plumbline-token", "invalid credentials")):
+        for mode, token, label, variant in (
+            ("none", None, "no credentials", "No credentials"),
+            ("configured", "invalid-plumbline-token", "invalid credentials", "Invalid token"),
+        ):
             observed = await request_operation(client, api_model, config, operation, token=token, auth_mode=mode)
             if observed.status is None:
                 status, result = "inconclusive", observed.text
@@ -27,6 +30,6 @@ async def run(api_model: ApiModel, config: RunConfig, client: httpx.AsyncClient)
                 status, result = "inconclusive", f"HTTP {observed.status} did not confirm authorization behavior"
             findings.append(make_finding(
                 "auth", operation, status, "401 or 403 for unauthenticated request", result,
-                observed, severity="high", suffix=label.replace(" ", "_"),
+                observed, severity="high", suffix=label.replace(" ", "_"), variant=variant,
             ))
     return findings

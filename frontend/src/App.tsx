@@ -1,94 +1,43 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity,
-  ArrowDownToLine,
-  ArrowRight,
-  Braces,
-  Check,
-  ChevronDown,
-  ChevronRight,
-  CircleAlert,
-  Clipboard,
-  Code2,
-  Copy,
-  FileCheck2,
-  FileJson2,
-  FileUp,
-  FlaskConical,
-  Globe2,
-  LoaderCircle,
-  Play,
-  Plus,
-  RefreshCw,
-  Search,
-  Send,
-  ShieldCheck,
-  Terminal,
-  X,
+  Activity, AlertTriangle, ArrowDownToLine, ArrowRight, Braces, Check, CheckCircle2,
+  ChevronDown, ChevronRight, CircleAlert, Clipboard, Code2, Copy,
+  Eye, EyeOff, FileCheck2, FileJson2, FileUp, FlaskConical, Globe2, KeyRound,
+  LoaderCircle, LockKeyhole, PanelLeftClose, PanelLeftOpen,
+  Play, Search, Send, Settings2, ShieldCheck, Terminal, X,
 } from "lucide-react";
 
-type Parameter = {
-  name: string;
-  in: string;
-  required?: boolean;
-  description?: string;
-  schema?: Record<string, unknown>;
-};
-
+type Parameter = { name: string; in: string; required?: boolean; description?: string; schema?: Record<string, unknown> };
 type Operation = {
-  id: string;
-  method: string;
-  path: string;
-  summary: string;
-  tags?: string[];
-  parameters: Parameter[];
-  request_schema?: Record<string, unknown> | null;
-  request_required?: boolean;
-  security: string[];
+  id: string; method: string; path: string; summary: string; tags?: string[];
+  parameters: Parameter[]; request_schema?: Record<string, unknown> | null;
+  request_required?: boolean; security: string[];
 };
-
-type ApiModel = {
-  title: string;
-  version: string;
-  operations: Operation[];
-  security_schemes?: Record<string, Record<string, string>>;
-};
-
-type Evidence = {
-  method?: string;
-  url?: string;
-  headers?: Record<string, string>;
-  body?: unknown;
-  status?: number | null;
-  body_snippet?: string;
-  elapsed_ms?: number | null;
-};
-
+type ApiModel = { title: string; version: string; operations: Operation[]; security_schemes?: Record<string, Record<string, string>> };
+type Evidence = { method?: string; url?: string; headers?: Record<string, string>; body?: unknown; status?: number | null; body_snippet?: string; elapsed_ms?: number | null };
 type Finding = {
-  id: string;
-  check: string;
-  severity: string;
-  status: "pass" | "fail" | "inconclusive";
-  operation_id?: string | null;
-  expected: string;
-  observed: string;
-  request?: Evidence | null;
-  response?: Evidence | null;
+  id: string; check: string; severity: "info" | "low" | "medium" | "high";
+  status: "pass" | "fail" | "inconclusive"; operation_id?: string | null;
+  expected: string; observed: string; cluster_key: string; variant?: string | null;
+  request?: Evidence | null; response?: Evidence | null;
 };
-
-type RunReport = {
-  run_id: string;
-  base_url: string;
-  started_at: string;
-  findings: Finding[];
-  summary: Record<string, number>;
+type RunReport = { run_id: string; base_url: string; started_at: string; findings: Finding[]; summary: Record<string, number> };
+type RunSummary = {
+  run_id: string; verdict: string; operation_count: number; counts: Record<string, number>;
+  severity_status: Record<string, Record<string, number>>;
+  failures_by_check: { check: string; count: number }[];
+  clusters: { cluster_key: string; title: string; check: string; expected: string; observed: string; count: number; severity: string; sample_endpoints: { operation_id: string | null; method: string | null; path: string }[]; finding_ids: string[] }[];
 };
-
-type Tab = "import" | "explorer" | "runs";
 type AuthMode = "bearer" | "apikey";
+type Page = "import" | "explorer" | "runs" | "mcp";
+type AuthStatus = "missing" | "set" | "invalid";
+type ResponsePayload = { status: number; url: string; headers: Record<string, string>; body: unknown; elapsed_ms: number };
+type RequestTab = "Params" | "Body" | "Auth" | "Headers";
+type ResponseTab = "Body" | "Headers" | "Timing";
 
 const API = "/api";
 const DEMO_SPEC_URL = import.meta.env.VITE_DEMO_SPEC_URL ?? "http://127.0.0.1:8001/openapi.json";
+const severityOrder: Record<string, number> = { high: 0, medium: 1, low: 2, info: 3 };
 
 function sampleFromSchema(schema?: Record<string, unknown>): unknown {
   if (!schema) return {};
@@ -98,11 +47,7 @@ function sampleFromSchema(schema?: Record<string, unknown>): unknown {
   if (schema.type === "object") {
     const properties = (schema.properties ?? {}) as Record<string, Record<string, unknown>>;
     const required = new Set((schema.required ?? []) as string[]);
-    return Object.fromEntries(
-      Object.entries(properties)
-        .filter(([key]) => required.size === 0 || required.has(key))
-        .map(([key, value]) => [key, sampleFromSchema(value)]),
-    );
+    return Object.fromEntries(Object.entries(properties).filter(([key]) => required.size === 0 || required.has(key)).map(([key, value]) => [key, sampleFromSchema(value)]));
   }
   if (schema.type === "array") return [sampleFromSchema(schema.items as Record<string, unknown>)];
   if (schema.type === "integer" || schema.type === "number") return 1;
@@ -112,14 +57,13 @@ function sampleFromSchema(schema?: Record<string, unknown>): unknown {
 }
 
 function parameterInitialValue(parameter: Parameter): string {
+  if (parameter.in === "path") return "";
   const value = sampleFromSchema(parameter.schema);
   return value === undefined || value === null ? "" : typeof value === "string" ? value : JSON.stringify(value);
 }
 
 function errorMessage(payload: unknown): string {
-  if (typeof payload === "object" && payload !== null && "detail" in payload) {
-    return String((payload as { detail: unknown }).detail);
-  }
+  if (typeof payload === "object" && payload !== null && "detail" in payload) return String((payload as { detail: unknown }).detail);
   return "The request could not be completed.";
 }
 
@@ -131,47 +75,92 @@ async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 function pretty(value: unknown): string {
-  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  if (typeof value === "string") {
+    try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value; }
+  }
+  return JSON.stringify(value, null, 2);
+}
+
+function operationTag(operation: Operation): string {
+  const tag = operation.tags?.find((value) => value.trim());
+  return tag || operation.path.split("/").filter(Boolean)[0] || "Other";
+}
+
+function curlFor(finding: Finding): string {
+  if (!finding.request) return "No request evidence was captured.";
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  const parts = ["curl --include", `--request ${quote(finding.request.method ?? "GET")}`, `--url ${quote(finding.request.url ?? "")}`];
+  const headers = { ...(finding.request.headers ?? {}) };
+  const hasContentType = Object.keys(headers).some((name) => name.toLowerCase() === "content-type");
+  if (finding.request.body !== undefined && finding.request.body !== null && !hasContentType) headers["Content-Type"] = "application/json";
+  for (const [name, raw] of Object.entries(headers)) {
+    const lower = name.toLowerCase();
+    const value = lower === "authorization" || lower.includes("api-key") || lower.includes("apikey") ? "[REDACTED]" : raw;
+    parts.push(`--header ${quote(`${name}: ${value}`)}`);
+  }
+  if (finding.request.body !== undefined && finding.request.body !== null) parts.push(`--data ${quote(JSON.stringify(finding.request.body) ?? "null")}`);
+  return parts.join(" \\\n  ");
 }
 
 function statusLabel(status: string): string {
-  return status === "pass" ? "Pass" : status === "fail" ? "Fail" : "Inconclusive";
+  return status === "pass" ? "Passed" : status === "fail" ? "Failed" : "Inconclusive";
 }
 
 function App() {
-  const [tab, setTab] = useState<Tab>("import");
+  const [page, setPage] = useState<Page>("import");
   const [model, setModel] = useState<ApiModel | null>(null);
   const [specText, setSpecText] = useState("");
   const [importError, setImportError] = useState("");
   const [importBusy, setImportBusy] = useState(false);
-  const [selectedOperationId, setSelectedOperationId] = useState("");
-  const [operationSearch, setOperationSearch] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
+  const [baseUrl, setBaseUrl] = useState(() => localStorage.getItem("plumbline-target") ?? "");
   const [authMode, setAuthMode] = useState<AuthMode>("bearer");
   const [token, setToken] = useState("");
   const [apiKeyHeader, setApiKeyHeader] = useState("X-API-Key");
+  const [authStatus, setAuthStatus] = useState<AuthStatus>("missing");
+  const [authError, setAuthError] = useState("");
+  const [allowMutations, setAllowMutations] = useState(false);
+  const [sessionEditor, setSessionEditor] = useState<"target" | "auth" | null>(null);
+  const [targetDraft, setTargetDraft] = useState("");
+  const [tokenDraft, setTokenDraft] = useState("");
+  const [authModeDraft, setAuthModeDraft] = useState<AuthMode>("bearer");
+  const [headerDraft, setHeaderDraft] = useState("X-API-Key");
+  const [showToken, setShowToken] = useState(false);
+  const [toast, setToast] = useState("");
+  const [lastRunStatus, setLastRunStatus] = useState<"good" | "bad" | "inconclusive" | "none">(() => {
+    const saved = localStorage.getItem("plumbline-last-run-status");
+    return saved === "good" || saved === "bad" || saved === "inconclusive" ? saved : "none";
+  });
+  const [runCount, setRunCount] = useState(() => Number(localStorage.getItem("plumbline-run-count") ?? 0));
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("plumbline-sidebar-collapsed") === "true");
+  const [endpointsCollapsed, setEndpointsCollapsed] = useState(() => localStorage.getItem("plumbline-endpoints-collapsed") === "true");
+  const [selectedOperationId, setSelectedOperationId] = useState("");
+  const [operationSearch, setOperationSearch] = useState("");
   const [parameterValues, setParameterValues] = useState<Record<string, string>>({});
   const [bodyValue, setBodyValue] = useState("");
+  const [requestTab, setRequestTab] = useState<RequestTab>("Params");
+  const [responseTab, setResponseTab] = useState<ResponseTab>("Body");
   const [requestBusy, setRequestBusy] = useState(false);
   const [requestError, setRequestError] = useState("");
-  const [responsePayload, setResponsePayload] = useState<Record<string, unknown> | null>(null);
-  const [specPath, setSpecPath] = useState("");
-  const [mcpConfig, setMcpConfig] = useState("");
-  const [mcpBusy, setMcpBusy] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [allowMutations, setAllowMutations] = useState(false);
+  const [responsePayload, setResponsePayload] = useState<ResponsePayload | null>(null);
   const [rolesText, setRolesText] = useState("");
   const [runBusy, setRunBusy] = useState(false);
   const [runError, setRunError] = useState("");
   const [report, setReport] = useState<RunReport | null>(null);
+  const [runSummary, setRunSummary] = useState<RunSummary | null>(null);
+  const [statusFilter, setStatusFilter] = useState<"all" | "fail" | "pass" | "inconclusive">("all");
+  const [findingSearch, setFindingSearch] = useState("");
+  const [checkFilter, setCheckFilter] = useState("all");
+  const [groupBy, setGroupBy] = useState<"none" | "check" | "endpoint" | "cluster">("none");
+  const [activeCluster, setActiveCluster] = useState<string | null>(null);
   const [selectedFindingId, setSelectedFindingId] = useState("");
-  const [copyHint, setCopyHint] = useState("");
+  const [mcpClient, setMcpClient] = useState<"Claude Desktop" | "Cursor">("Claude Desktop");
+  const [mcpConfig, setMcpConfig] = useState("");
+  const [mcpError, setMcpError] = useState("");
+  const [mcpBusy, setMcpBusy] = useState(false);
+  const findingSearchRef = useRef<HTMLInputElement>(null);
+  const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
 
-  const selectedOperation = useMemo(
-    () => model?.operations.find((operation) => operation.id === selectedOperationId) ?? null,
-    [model, selectedOperationId],
-  );
-  const selectedFinding = report?.findings.find((finding) => finding.id === selectedFindingId) ?? null;
+  const selectedOperation = model?.operations.find((operation) => operation.id === selectedOperationId) ?? null;
 
   const operationGroups = useMemo(() => {
     const groups = new Map<string, Operation[]>();
@@ -179,77 +168,179 @@ function App() {
     for (const operation of model?.operations ?? []) {
       const searchable = `${operation.id} ${operation.path} ${operation.method} ${operation.summary}`.toLowerCase();
       if (term && !searchable.includes(term)) continue;
-      const tag = operation.tags?.[0] || operation.path.split("/").filter(Boolean)[0] || "Other";
+      const tag = operationTag(operation);
       groups.set(tag, [...(groups.get(tag) ?? []), operation]);
     }
     return [...groups.entries()];
   }, [model, operationSearch]);
 
+  const filteredFindings = useMemo(() => {
+    if (!report) return [];
+    const operations = new Map((model?.operations ?? []).map((operation) => [operation.id, operation]));
+    const search = findingSearch.trim().toLowerCase();
+    return report.findings.filter((finding) => {
+      if (statusFilter !== "all" && finding.status !== statusFilter) return false;
+      if (checkFilter !== "all" && finding.check !== checkFilter) return false;
+      if (activeCluster && finding.cluster_key !== activeCluster) return false;
+      const path = operations.get(finding.operation_id ?? "")?.path ?? "";
+      return !search || `${finding.operation_id ?? ""} ${path}`.toLowerCase().includes(search);
+    }).sort((a, b) => {
+      const statusOrder = { fail: 0, inconclusive: 1, pass: 2 };
+      return statusOrder[a.status] - statusOrder[b.status]
+        || (a.status === "pass" ? 0 : severityOrder[a.severity] - severityOrder[b.severity])
+        || (a.operation_id ?? "").localeCompare(b.operation_id ?? "");
+    });
+  }, [report, model, statusFilter, checkFilter, findingSearch, activeCluster]);
+  const selectedFinding = filteredFindings.find((finding) => finding.id === selectedFindingId) ?? null;
+
   useEffect(() => {
     if (!selectedOperation) return;
-    setParameterValues(
-      Object.fromEntries(selectedOperation.parameters.map((parameter) => [parameter.name, parameterInitialValue(parameter)])),
-    );
-    setBodyValue(
-      selectedOperation.request_schema
-        ? JSON.stringify(sampleFromSchema(selectedOperation.request_schema), null, 2)
-        : "",
-    );
+    setParameterValues(Object.fromEntries(selectedOperation.parameters.map((parameter) => [parameter.name, parameterInitialValue(parameter)])));
+    setBodyValue(selectedOperation.request_schema ? JSON.stringify(sampleFromSchema(selectedOperation.request_schema), null, 2) : "");
     setResponsePayload(null);
     setRequestError("");
   }, [selectedOperation]);
 
-  async function importSpec(text = specText) {
-    if (!text.trim()) {
-      setImportError("Paste or choose an OpenAPI document first.");
+  useEffect(() => { localStorage.setItem("plumbline-sidebar-collapsed", String(sidebarCollapsed)); }, [sidebarCollapsed]);
+  useEffect(() => { localStorage.setItem("plumbline-endpoints-collapsed", String(endpointsCollapsed)); }, [endpointsCollapsed]);
+  useEffect(() => { localStorage.setItem("plumbline-run-count", String(runCount)); }, [runCount]);
+  useEffect(() => { localStorage.setItem("plumbline-last-run-status", lastRunStatus); }, [lastRunStatus]);
+  useEffect(() => {
+    let active = true;
+    void apiRequest<ApiModel>(`${API}/model`).then((loaded) => {
+      if (!active) return;
+      setModel(loaded);
+      setSelectedOperationId(loaded.operations[0]?.id ?? "");
+      setPage("explorer");
+    }).catch(() => undefined);
+    const savedRunId = localStorage.getItem("plumbline-last-run-id");
+    if (savedRunId) {
+      void Promise.all([
+        apiRequest<RunReport>(`${API}/runs/${savedRunId}/report.json`),
+        apiRequest<RunSummary>(`${API}/runs/${savedRunId}/summary`),
+      ]).then(([savedReport, savedSummary]) => {
+        if (!active) return;
+        setReport(savedReport);
+        setRunSummary(savedSummary);
+        setStatusFilter(savedReport.findings.some((finding) => finding.status === "fail") ? "fail" : "all");
+        setSelectedFindingId(savedReport.findings.find((finding) => finding.status === "fail")?.id ?? savedReport.findings[0]?.id ?? "");
+      }).catch(() => {
+        if (!active) return;
+        localStorage.removeItem("plumbline-last-run-id");
+      });
+    }
+    return () => { active = false; };
+  }, []);
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(""), 2800);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  useEffect(() => {
+    if (filteredFindings.length && !filteredFindings.some((finding) => finding.id === selectedFindingId)) {
+      setSelectedFindingId(filteredFindings[0].id);
+    } else if (!filteredFindings.length && selectedFindingId) {
+      setSelectedFindingId("");
+    }
+  }, [filteredFindings, selectedFindingId]);
+
+  useEffect(() => {
+    if (page !== "runs") return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const editing = target?.matches("input,textarea,select,[contenteditable=true]");
+      if (event.key === "/" && !editing) { event.preventDefault(); findingSearchRef.current?.focus(); return; }
+      if (editing || !filteredFindings.length) return;
+      if (event.key === "j" || event.key === "k") {
+        event.preventDefault();
+        const index = filteredFindings.findIndex((finding) => finding.id === selectedFindingId);
+        const next = Math.max(0, Math.min(filteredFindings.length - 1, index + (event.key === "j" ? 1 : -1)));
+        setSelectedFindingId(filteredFindings[next].id);
+        rowRefs.current[filteredFindings[next].id]?.focus();
+      }
+      if (event.key === "Enter" && selectedFindingId) {
+        event.preventDefault();
+        document.querySelector(".finding-detail")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [page, filteredFindings, selectedFindingId]);
+
+  function openSessionEditor(type: "target" | "auth") {
+    setSessionEditor(sessionEditor === type ? null : type);
+    if (type === "target") setTargetDraft(baseUrl);
+    if (type === "auth") {
+      setAuthError("");
+      setTokenDraft(token);
+      setAuthModeDraft(authMode);
+      setHeaderDraft(apiKeyHeader);
+      setShowToken(false);
+    }
+  }
+
+  function saveAuth() {
+    if (!tokenDraft.trim()) {
+      setAuthError("Enter a token or use Clear to remove the current credentials.");
       return;
     }
-    setImportBusy(true);
-    setImportError("");
-    try {
-      const imported = await apiRequest<ApiModel>(`${API}/import`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ spec: text }),
-      });
-      setModel(imported);
-      setSelectedOperationId(imported.operations[0]?.id ?? "");
-      setTab("explorer");
-    } catch (error) {
-      setImportError(error instanceof Error ? error.message : "Could not import the contract.");
-    } finally {
-      setImportBusy(false);
+    if (authModeDraft === "apikey" && !headerDraft.trim()) {
+      setAuthError("Enter the API key header name.");
+      return;
     }
+    if (tokenDraft === token && authModeDraft === authMode && headerDraft === apiKeyHeader) {
+      setToast("Token unchanged");
+      setSessionEditor(null);
+      return;
+    }
+    setToken(tokenDraft);
+    setAuthMode(authModeDraft);
+    setApiKeyHeader(headerDraft);
+    setAuthStatus(tokenDraft ? "set" : "missing");
+    setMcpConfig("");
+    setToast("Auth updated");
+    setSessionEditor(null);
+  }
+
+  function clearAuth() {
+    setToken(""); setTokenDraft(""); setAuthStatus("missing"); setAuthError(""); setMcpConfig(""); setToast("Auth cleared"); setSessionEditor(null);
+  }
+
+  function saveTarget() {
+    const target = targetDraft.trim().replace(/\/$/, "");
+    setBaseUrl(target); localStorage.setItem("plumbline-target", target); setMcpConfig("");
+    setSessionEditor(null);
+    setToast("Target updated");
+  }
+
+  async function importSpec(text = specText) {
+    if (!text.trim()) { setImportError("Choose a file or paste an OpenAPI document first."); return; }
+    setImportBusy(true); setImportError("");
+    try {
+      const imported = await apiRequest<ApiModel>(`${API}/import`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ spec: text }) });
+      setModel(imported); setSelectedOperationId(imported.operations[0]?.id ?? ""); setPage("explorer"); setLastRunStatus("none"); localStorage.removeItem("plumbline-last-run-id"); setReport(null); setRunSummary(null); setToast(`Imported ${imported.operations.length} operations`);
+    } catch (error) { setImportError(error instanceof Error ? error.message : "Could not import the contract."); }
+    finally { setImportBusy(false); }
   }
 
   async function loadDemoContract() {
-    setImportBusy(true);
-    setImportError("");
+    setImportBusy(true); setImportError("");
     try {
-      const imported = await apiRequest<ApiModel>(`${API}/import`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: DEMO_SPEC_URL }),
-      });
-      setModel(imported);
-      setSelectedOperationId(imported.operations[0]?.id ?? "");
-      setSpecPath("demo_api/openapi.json");
-      setTab("explorer");
-    } catch (error) {
-      setImportError(error instanceof Error ? error.message : "Could not load the demo API contract.");
-    } finally {
-      setImportBusy(false);
-    }
+      const imported = await apiRequest<ApiModel>(`${API}/import`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: DEMO_SPEC_URL }) });
+      setModel(imported); setSelectedOperationId(imported.operations[0]?.id ?? ""); setPage("explorer"); setLastRunStatus("none"); localStorage.removeItem("plumbline-last-run-id"); setReport(null); setRunSummary(null); setToast("Demo contract loaded");
+    } catch (error) { setImportError(error instanceof Error ? error.message : "Could not load the demo contract."); }
+    finally { setImportBusy(false); }
+  }
+
+  async function loadFile(file?: File) {
+    if (!file) return;
+    setSpecText(await file.text()); setImportError("");
   }
 
   async function sendOperation() {
-    if (!selectedOperation) return;
-    setRequestError("");
-    setResponsePayload(null);
-    if (!baseUrl.trim()) {
-      setRequestError("Enter the API base URL before sending a request.");
-      return;
-    }
+    if (!selectedOperation || !baseUrl.trim()) { setRequestError("Set a target in the session bar before sending a request."); return; }
+    if (selectedOperation.method !== "GET" && !allowMutations) { setRequestError("Mutations are off. Turn them on in the session bar before sending this request."); return; }
     const parameters: Record<string, unknown> = {};
     try {
       for (const parameter of selectedOperation.parameters) {
@@ -257,276 +348,320 @@ function App() {
         if (!raw && !parameter.required) continue;
         if (!raw && parameter.required) throw new Error(`${parameter.name} is required.`);
         const type = parameter.schema?.type;
-        parameters[parameter.name] =
-          type === "integer" || type === "number"
-            ? Number(raw)
-            : type === "boolean"
-              ? raw === "true"
-              : type === "array" || type === "object"
-                ? JSON.parse(raw)
-                : raw;
+        parameters[parameter.name] = type === "integer" || type === "number" ? Number(raw) : type === "boolean" ? raw === "true" : type === "array" || type === "object" ? JSON.parse(raw) : raw;
       }
       const body = selectedOperation.request_schema ? JSON.parse(bodyValue || "null") : undefined;
-      setRequestBusy(true);
-      const result = await apiRequest<Record<string, unknown>>(`${API}/explorer/request`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          operation_id: selectedOperation.id,
-          base_url: baseUrl,
-          parameters,
-          body,
-          auth: token ? { type: authMode, token, header_name: apiKeyHeader } : null,
-        }),
+      setRequestBusy(true); setRequestError(""); setResponsePayload(null);
+      const start = performance.now();
+      const result = await apiRequest<Omit<ResponsePayload, "elapsed_ms">>(`${API}/explorer/request`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operation_id: selectedOperation.id, base_url: baseUrl, parameters, body, auth: token ? { type: authMode, token, header_name: apiKeyHeader } : null }),
       });
-      setResponsePayload(result);
-    } catch (error) {
-      setRequestError(error instanceof Error ? error.message : "The request could not be completed.");
-    } finally {
-      setRequestBusy(false);
-    }
-  }
-
-  async function getMcpConfig() {
-    if (!baseUrl.trim() || !specPath.trim()) {
-      setRequestError("Enter the API base URL and the OpenAPI file path available to the MCP client.");
-      return;
-    }
-    setMcpBusy(true);
-    setRequestError("");
-    try {
-      const query = new URLSearchParams({ spec_path: specPath, base_url: baseUrl });
-      const config = await apiRequest<Record<string, unknown>>(`${API}/mcp-config?${query.toString()}`);
-      setMcpConfig(JSON.stringify(config, null, 2));
-    } catch (error) {
-      setRequestError(error instanceof Error ? error.message : "Could not build the MCP config.");
-    } finally {
-      setMcpBusy(false);
-    }
-  }
-
-  async function copyMcpConfig() {
-    await navigator.clipboard.writeText(mcpConfig);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1600);
+      const elapsed = performance.now() - start;
+      setResponsePayload({ ...result, elapsed_ms: elapsed });
+      if (token && result.status === 401 || token && result.status === 403) { setAuthStatus("invalid"); setToast("Credentials rejected by target"); }
+      else if (token && result.status < 400) setAuthStatus("set");
+    } catch (error) { setRequestError(error instanceof Error ? error.message : "The request could not be completed."); }
+    finally { setRequestBusy(false); }
   }
 
   async function runChecks() {
-    setRunError("");
-    setReport(null);
-    if (!baseUrl.trim()) {
-      setRunError("Enter the API base URL before starting a run.");
-      return;
-    }
+    if (!model) { setRunError("Import a contract before starting a run."); return; }
+    if (!baseUrl.trim()) { setRunError("Set a target in the session bar before starting a run."); return; }
     let roles: unknown[] = [];
+    try { roles = rolesText.trim() ? JSON.parse(rolesText) : []; if (!Array.isArray(roles)) throw new Error("Roles must be a JSON array."); }
+    catch (error) { setRunError(error instanceof Error ? error.message : "Roles must be valid JSON."); return; }
+    setRunError(""); setRunBusy(true); setReport(null); setRunSummary(null); setActiveCluster(null);
     try {
-      roles = rolesText.trim() ? JSON.parse(rolesText) : [];
-      if (!Array.isArray(roles)) throw new Error("Roles must be a JSON array.");
-    } catch (error) {
-      setRunError(error instanceof Error ? error.message : "Roles must be valid JSON.");
-      return;
-    }
-    setRunBusy(true);
-    try {
-      const created = await apiRequest<{ run_id: string }>(`${API}/runs`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          base_url: baseUrl,
-          auth: token ? { type: authMode, token, header_name: apiKeyHeader } : null,
-          roles,
-          allow_mutations: allowMutations,
-        }),
-      });
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        const status = await apiRequest<{ status: string }>(`${API}/runs/${created.run_id}`);
-        if (status.status === "completed") {
-          const completed = await apiRequest<RunReport>(`${API}/runs/${created.run_id}/report.json`);
-          setReport(completed);
-          setSelectedFindingId(completed.findings[0]?.id ?? "");
-          return;
+      const created = await apiRequest<{ run_id: string }>(`${API}/runs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ base_url: baseUrl, auth: token ? { type: authMode, token, header_name: apiKeyHeader } : null, roles, allow_mutations: allowMutations }) });
+      for (let attempt = 0; attempt < 180; attempt += 1) {
+        const state = await apiRequest<{ status: string }>(`${API}/runs/${created.run_id}`);
+        if (state.status === "completed") {
+          const [completed, summary] = await Promise.all([
+            apiRequest<RunReport>(`${API}/runs/${created.run_id}/report.json`),
+            apiRequest<RunSummary>(`${API}/runs/${created.run_id}/summary`),
+          ]);
+          setReport(completed); setRunSummary(summary); setSelectedFindingId(completed.findings.find((finding) => finding.status === "fail")?.id ?? completed.findings[0]?.id ?? "");
+          setStatusFilter(completed.findings.some((finding) => finding.status === "fail") ? "fail" : "all");
+          const finalStatus = completed.summary.fail > 0 ? "bad" : completed.summary.inconclusive > 0 ? "inconclusive" : "good";
+          setLastRunStatus(finalStatus); localStorage.setItem("plumbline-last-run-id", completed.run_id);
+          setRunCount((value) => value + 1); setToast("Run complete"); return;
         }
         await new Promise((resolve) => window.setTimeout(resolve, 500));
       }
-      throw new Error("The run is still in progress. Open Runs again to refresh its status.");
-    } catch (error) {
-      setRunError(error instanceof Error ? error.message : "The test run failed.");
-    } finally {
-      setRunBusy(false);
-    }
+      throw new Error("Run has not completed yet. Check the run status and retry.");
+    } catch (error) { setRunError(error instanceof Error ? error.message : "The run could not complete."); }
+    finally { setRunBusy(false); }
   }
 
-  async function loadFile(file?: File) {
-    if (!file) return;
-    setSpecText(await file.text());
-    setImportError("");
+  async function generateMcpConfig() {
+    if (!model) { setMcpError("Import an OpenAPI document first."); return; }
+    if (!baseUrl.trim()) { setMcpError("Set the API target in the session bar first."); return; }
+    if (!model) { setMcpError("Import an OpenAPI document first."); return; }
+    setMcpError(""); setMcpBusy(true);
+    try {
+      const query = new URLSearchParams({ spec_path: ".", base_url: baseUrl });
+      const config = await apiRequest<Record<string, unknown>>(`${API}/mcp-config?${query.toString()}`);
+      const servers = config.mcpServers as Record<string, Record<string, unknown>>;
+      const server = servers.plumbline;
+      const originalArgs = server.args as string[];
+      const replacedFlags = new Set(["--spec", "--base-url"]);
+      const args = originalArgs.filter((value, index) => !replacedFlags.has(value) && !replacedFlags.has(originalArgs[index - 1]));
+      const modelJson = JSON.stringify(model);
+      const bytes = new TextEncoder().encode(modelJson);
+      let binary = "";
+      for (const byte of bytes) binary += String.fromCharCode(byte);
+      const encodedModel = btoa(binary);
+      for (let index = 0; index < encodedModel.length; index += 60000) {
+        args.push("--model-base64", encodedModel.slice(index, index + 60000));
+      }
+      args.push("--base-url", baseUrl);
+      if (token) args.push("--token-env", "PLUMBLINE_TOKEN");
+      if (allowMutations) args.push("--allow-mutations");
+      server.args = args;
+      server.env = token ? { PLUMBLINE_TOKEN: "${PLUMBLINE_TOKEN}" } : {};
+      setMcpConfig(JSON.stringify(config, null, 2)); setToast(`${mcpClient} config ready`);
+    } catch (error) { setMcpError(error instanceof Error ? error.message : "Could not generate MCP configuration."); }
+    finally { setMcpBusy(false); }
   }
 
-  const tabs: { id: Tab; label: string; icon: typeof FileCheck2; count?: number }[] = [
+  async function copyText(value: string, message: string) {
+    try { await navigator.clipboard.writeText(value); setToast(message); }
+    catch { setToast("Clipboard access is unavailable"); }
+  }
+
+  const pages: { id: Page; label: string; icon: typeof FileJson2; badge?: string }[] = [
     { id: "import", label: "Import", icon: FileUp },
-    { id: "explorer", label: "Explorer", icon: Code2, count: model?.operations.length },
-    { id: "runs", label: "Runs", icon: FlaskConical, count: report?.findings.length },
+    { id: "explorer", label: "Explorer", icon: Code2 },
+    { id: "runs", label: "Runs", icon: FlaskConical, badge: String(runCount) },
+    { id: "mcp", label: "MCP", icon: Braces },
   ];
 
   return (
-    <div className="app-shell">
-      <aside className="rail">
-        <div className="brand-mark"><span className="brand-glyph"><Activity size={19} /></span></div>
-        <div className="rail-rule" />
-        <div className="rail-status"><span className="pulse-dot" /><span>LOCAL</span></div>
-        <div className="rail-bottom"><span className="rail-version">0.1.0</span><span className="rail-line" /></div>
-      </aside>
-
-      <div className="workspace">
-        <header className="topbar">
-          <div className="wordmark">plumbline<span className="wordmark-period">.</span></div>
-          <div className="topbar-center"><span className="eyebrow">API CONTRACT WORKBENCH</span><span className="topbar-divider" /><span className="topbar-context">{model?.title || "No contract loaded"}</span></div>
-          <div className="topbar-right"><span className="connection-indicator"><span /> backend ready</span><span className="topbar-separator" /><span className="avatar">M</span></div>
-        </header>
-
-        <div className="app-body">
-          <nav className="sidebar">
-            <div className="sidebar-caption">WORKSPACE</div>
-            <div className="nav-list">
-              {tabs.map(({ id, label, icon: Icon, count }) => (
-                <button key={id} className={`nav-item ${tab === id ? "active" : ""}`} onClick={() => setTab(id)}>
-                  <Icon size={16} strokeWidth={1.8} /><span>{label}</span>{count !== undefined && <span className="nav-count">{count}</span>}
-                </button>
-              ))}
-            </div>
-            <div className="sidebar-spacer" />
-            <div className="sidebar-note">
-              <div className="sidebar-note-icon"><ShieldCheck size={15} /></div>
-              <div><span>SAFE BY DEFAULT</span><p>State-changing checks stay off until enabled.</p></div>
-            </div>
-            <div className="sidebar-footer"><span className="footer-mark">PL</span><span>Engineering tools</span><span className="footer-dot" /></div>
-          </nav>
-
-          <main className="main-content">
-            {tab === "import" && (
-              <section className="page import-page">
-                <PageHeading index="01" title="Import a contract" subtitle="Bring an OpenAPI document into your workspace to explore and verify its behavior." />
-                <div className="import-layout">
-                  <div className="panel import-editor-panel">
-                    <div className="panel-heading">
-                      <div className="panel-heading-title"><span className="step-icon"><FileJson2 size={16} /></span><div><h2>OpenAPI source</h2><p>JSON or YAML · OpenAPI 3.x</p></div></div>
-                      <label className="button button-quiet upload-button"><FileUp size={14} /> Choose file<input type="file" accept=".json,.yaml,.yml,application/json,text/yaml" onChange={(event) => void loadFile(event.target.files?.[0])} /></label>
-                    </div>
-                    <textarea className="spec-editor" spellCheck={false} value={specText} onChange={(event) => setSpecText(event.target.value)} placeholder={'Paste your OpenAPI JSON or YAML here…\n\nopenapi: 3.0.3\ninfo:\n  title: Example API\n  version: 1.0.0\npaths: {}'} />
-                    <div className="editor-footer"><span><Braces size={13} /> {specText ? `${specText.length.toLocaleString()} characters` : "Waiting for a specification"}</span><span className="editor-language">YAML / JSON</span></div>
-                    {importError && <InlineError>{importError}</InlineError>}
-                    <div className="import-actions"><button className="button button-primary" onClick={() => void importSpec()} disabled={importBusy}>{importBusy ? <LoaderCircle className="spin" size={15} /> : <FileCheck2 size={15} />}{importBusy ? "Validating contract" : "Validate and import"}<ArrowRight size={14} /></button><button className="button button-quiet" onClick={() => void loadDemoContract()} disabled={importBusy}><Play size={13} /> Load demo contract</button></div>
-                  </div>
-                  <div className="import-aside">
-                    <div className="aside-label">WHAT HAPPENS NEXT</div>
-                    <div className="flow-card"><div className="flow-number">01</div><div><strong>Validate</strong><p>References are resolved and the document is checked against the OpenAPI specification.</p></div><Check size={14} /></div>
-                    <div className="flow-connector" />
-                    <div className="flow-card"><div className="flow-number">02</div><div><strong>Normalize</strong><p>Operations, parameters, security and schemas become one shared API model.</p></div><Check size={14} /></div>
-                    <div className="flow-connector" />
-                    <div className="flow-card"><div className="flow-number">03</div><div><strong>Explore</strong><p>Send a request or run checks against an explicitly chosen base URL.</p></div><ArrowRight size={14} /></div>
-                    <div className="import-tip"><CircleAlert size={15} /><p>The contract describes the API. Choose the target URL separately before sending requests.</p></div>
-                  </div>
-                </div>
-              </section>
-            )}
-
-            {tab === "explorer" && (
-              <section className="page explorer-page">
-                <PageHeading index="02" title="API explorer" subtitle="Inspect operations and send a request against your chosen API instance." />
-                {!model ? <EmptyState title="Import a contract to begin" action="Open import" onClick={() => setTab("import")} /> : (
-                  <div className="explorer-layout">
-                    <aside className="operation-browser panel">
-                      <div className="browser-top"><div className="browser-title"><span className="live-small" /><div><strong>{model.title}</strong><span>v{model.version} · {model.operations.length} operations</span></div></div><button className="icon-button" title="Refresh model" onClick={() => window.location.reload()}><RefreshCw size={14} /></button></div>
-                      <label className="search-box"><Search size={14} /><input value={operationSearch} onChange={(event) => setOperationSearch(event.target.value)} placeholder="Filter operations" /><kbd>/</kbd></label>
-                      <div className="operation-list">
-                        {operationGroups.map(([group, operations]) => <div className="operation-group" key={group}><div className="group-label">{group}<span>{operations.length.toString().padStart(2, "0")}</span></div>{operations.map((operation) => <button key={operation.id} className={`operation-row ${selectedOperationId === operation.id ? "selected" : ""}`} onClick={() => setSelectedOperationId(operation.id)}><span className={`method method-${operation.method.toLowerCase()}`}>{operation.method}</span><span className="operation-path">{operation.path}</span></button>)}</div>)}
-                        {!operationGroups.length && <div className="empty-filter">No matching operations</div>}
-                      </div>
-                      <div className="browser-footer"><span className="tiny-dot" /> CONTRACT LOADED<span className="browser-footer-version">{model.version || "unversioned"}</span></div>
-                    </aside>
-
-                    <div className="operation-workbench">
-                      {selectedOperation && <>
-                        <div className="operation-header panel"><div><div className="crumb">{selectedOperation.tags?.[0] || "Operation"}<ChevronRight size={12} />{selectedOperation.id}</div><div className="operation-title-row"><span className={`method method-${selectedOperation.method.toLowerCase()}`}>{selectedOperation.method}</span><h2>{selectedOperation.path}</h2><button className="icon-button copy-path" title="Copy path" onClick={() => void navigator.clipboard.writeText(selectedOperation.path)}><Copy size={13} /></button></div><p>{selectedOperation.summary || "No operation description provided."}</p></div><div className="operation-id">OPERATION ID <code>{selectedOperation.id}</code></div></div>
-
-                        <div className="target-bar panel"><div className="target-label"><Globe2 size={14} /><span>TARGET</span></div><input aria-label="API base URL" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com" /><span className="target-hint">Set explicitly</span></div>
-
-                        <div className="request-grid">
-                          <div className="panel request-panel"><div className="section-head"><div><span className="section-index">01</span><h3>Request configuration</h3></div><span className="request-method-label">{selectedOperation.method}</span></div>
-                            <div className="auth-row"><div><label className="field-label">AUTHENTICATION</label><div className="auth-control"><select value={authMode} onChange={(event) => setAuthMode(event.target.value as AuthMode)}><option value="bearer">Bearer token</option><option value="apikey">API key</option></select><ChevronDown size={12} /></div></div><div className="auth-token-field"><label className="field-label">TOKEN</label><input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="Optional credential" autoComplete="off" /></div>{authMode === "apikey" && <div className="auth-header-field"><label className="field-label">HEADER</label><input value={apiKeyHeader} onChange={(event) => setApiKeyHeader(event.target.value)} /></div>}</div>
-                            {selectedOperation.parameters.length > 0 && <div className="request-section"><div className="request-subhead"><span>PARAMETERS</span><span>{selectedOperation.parameters.length} defined</span></div><div className="parameter-grid">{selectedOperation.parameters.map((parameter) => <ParameterInput key={`${parameter.in}:${parameter.name}`} parameter={parameter} value={parameterValues[parameter.name] ?? ""} onChange={(value) => setParameterValues((current) => ({ ...current, [parameter.name]: value }))} />)}</div></div>}
-                            {selectedOperation.request_schema && <div className="request-section"><div className="request-subhead"><span>REQUEST BODY</span><span>{selectedOperation.request_required ? "required" : "optional"} · application/json</span></div><textarea className="body-editor" spellCheck={false} value={bodyValue} onChange={(event) => setBodyValue(event.target.value)} /></div>}
-                            {requestError && <InlineError>{requestError}</InlineError>}
-                            <div className="send-row"><span><ShieldCheck size={13} /> Requests are sent through the local backend proxy</span><button className="button button-primary send-button" onClick={() => void sendOperation()} disabled={requestBusy}>{requestBusy ? <LoaderCircle className="spin" size={14} /> : <Send size={14} />}{requestBusy ? "Sending" : "Send request"}</button></div>
-                          </div>
-                          <div className="panel response-panel"><div className="section-head"><div><span className="section-index">02</span><h3>Response</h3></div>{responsePayload && <StatusPill label={String(responsePayload.status)} tone={Number(responsePayload.status) < 400 ? "pass" : "fail"} />}</div>
-                            {responsePayload ? <><div className="response-meta"><span>{String(responsePayload.url ?? "")}</span><button className="icon-button" title="Copy response" onClick={() => void navigator.clipboard.writeText(pretty(responsePayload))}><Copy size={13} /></button></div><pre className="response-code">{typeof responsePayload.body === "string" ? formatBody(responsePayload.body) : pretty(responsePayload.body)}</pre><div className="response-footer"><span>HTTP RESPONSE</span><span>{Object.keys((responsePayload.headers ?? {}) as object).length} headers</span></div></> : <div className="response-empty"><div className="response-empty-icon"><Terminal size={20} /></div><strong>No response yet</strong><p>Configure the request and send it to inspect the live result.</p><span><span className="response-dot" /> Awaiting request</span></div>}
-                          </div>
-                        </div>
-
-                        <div className="panel mcp-panel"><div className="mcp-copy"><div className="mcp-icon"><Braces size={17} /></div><div><h3>Connect an MCP client</h3><p>Generate a local server config for Claude Desktop or Cursor.</p></div></div><div className="mcp-fields"><div><label className="field-label">LOCAL SPEC FILE</label><input value={specPath} onChange={(event) => setSpecPath(event.target.value)} placeholder="/path/to/openapi.json" /></div><button className="button button-secondary" onClick={() => void getMcpConfig()} disabled={mcpBusy}>{mcpBusy ? <LoaderCircle className="spin" size={14} /> : <Terminal size={14} />}Generate config</button></div>{mcpConfig && <div className="mcp-result"><pre>{mcpConfig}</pre><button className="button button-quiet" onClick={() => void copyMcpConfig()}>{copied ? <Check size={14} /> : <Clipboard size={14} />}{copied ? "Copied" : "Copy JSON"}</button></div>}</div>
-                      </>}
-                    </div>
-                  </div>
-                )}
-              </section>
-            )}
-
-            {tab === "runs" && (
-              <section className="page runs-page">
-                <PageHeading index="03" title="Contract checks" subtitle="Run a focused verification against a real API response and review the evidence." />
-                {!model ? <EmptyState title="Import a contract before running checks" action="Open import" onClick={() => setTab("import")} /> : <>
-                  <div className="run-setup panel"><div className="run-setup-heading"><div className="run-setup-icon"><FlaskConical size={17} /></div><div><h2>New test run</h2><p>Target and credentials apply to this run only.</p></div><span className="safe-indicator"><ShieldCheck size={13} /> MUTATIONS OFF</span></div><div className="run-form-grid"><div className="form-field span-two"><label className="field-label">BASE URL <span className="required-mark">REQUIRED</span></label><input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com" /></div><div className="form-field"><label className="field-label">AUTH TYPE</label><select value={authMode} onChange={(event) => setAuthMode(event.target.value as AuthMode)}><option value="bearer">Bearer token</option><option value="apikey">API key</option></select></div><div className="form-field"><label className="field-label">TOKEN</label><input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="Optional" autoComplete="off" /></div><div className="form-field span-two"><label className="field-label">ROLE CONFIGURATION <span>OPTIONAL JSON ARRAY</span></label><textarea className="roles-editor" value={rolesText} onChange={(event) => setRolesText(event.target.value)} placeholder={'[{"name":"viewer","token":"...","allowed_operation_ids":["list_items"]}]'} /></div></div><div className="run-controls"><label className={`toggle-row ${allowMutations ? "enabled" : ""}`}><input type="checkbox" checked={allowMutations} onChange={(event) => setAllowMutations(event.target.checked)} /><span className="toggle-track"><span /></span><span><strong>Allow state-changing tests</strong><small>POST, PUT, PATCH and DELETE checks may modify the target API.</small></span></label><button className="button button-primary run-button" onClick={() => void runChecks()} disabled={runBusy}>{runBusy ? <LoaderCircle className="spin" size={15} /> : <Play size={14} />}{runBusy ? "Running checks" : "Run contract checks"}<ArrowRight size={14} /></button></div>{runError && <InlineError>{runError}</InlineError>}</div>
-
-                  {report && <div className="report-section"><div className="report-heading"><div><div className="eyebrow">LATEST RUN <span className="report-run-id">{report.run_id.slice(0, 12)}</span></div><h2>Findings and evidence</h2></div><div className="report-actions"><a className="button button-quiet" href={`${API}/runs/${report.run_id}/report.json`} download><ArrowDownToLine size={14} /> JSON</a><a className="button button-quiet" href={`${API}/runs/${report.run_id}/report.html`} target="_blank" rel="noreferrer"><ArrowDownToLine size={14} /> HTML</a></div></div><div className="summary-strip">{(["pass", "fail", "inconclusive"] as const).map((status) => <div className={`summary-card summary-${status}`} key={status}><span>{statusLabel(status)}</span><strong>{report.summary[status] ?? 0}</strong><small>findings</small></div>)}<div className="summary-target"><span>TEST TARGET</span><code>{report.base_url}</code><span className="summary-date">{new Date(report.started_at).toLocaleString()}</span></div></div><div className="findings-layout"><div className="findings-table-wrap"><table className="findings-table"><thead><tr><th>SEVERITY</th><th>STATUS</th><th>OPERATION</th><th>CHECK</th><th></th></tr></thead><tbody>{report.findings.map((finding) => <tr key={finding.id} className={selectedFindingId === finding.id ? "selected" : ""} onClick={() => setSelectedFindingId(finding.id)}><td><span className={`severity severity-${finding.severity}`}>{finding.severity}</span></td><td><StatusPill label={statusLabel(finding.status)} tone={finding.status} /></td><td><code>{finding.operation_id ?? "API"}</code></td><td>{finding.check}</td><td><ChevronRight size={14} /></td></tr>)}</tbody></table></div><div className="finding-detail panel">{selectedFinding ? <FindingDetail finding={selectedFinding} copyHint={copyHint} onCopy={async () => { await navigator.clipboard.writeText(pretty(selectedFinding)); setCopyHint("Copied evidence"); window.setTimeout(() => setCopyHint(""), 1400); }} /> : <div className="detail-empty">Select a finding to inspect its evidence.</div>}</div></div></div>}
-                </>}
-              </section>
-            )}
-            <footer className="page-footer"><span>PLUMBLINE / API CONTRACT VERIFICATION</span><span>REAL RESPONSES. EXPLICIT TARGETS.</span></footer>
-          </main>
+    <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+      <header className="session-bar">
+        <button className="brand-button" onClick={() => setPage("import")} aria-label="Plumbline home"><span className="brand-icon"><Activity size={17} /></span><span className="brand-name">plumbline<span>.</span></span></button>
+        <span className="header-divider" />
+        <div className="session-context"><span className="session-caption">API</span><strong>{model?.title ?? "No API loaded"}</strong><span className="version-label">{model ? `v${model.version}` : "Import a contract"}</span></div>
+        <div className="session-chips">
+          <div className="session-popover-wrap">
+            <button className={`session-chip ${baseUrl ? "configured" : "attention"}`} onClick={() => openSessionEditor("target")}><Globe2 size={14} /><span className="chip-label">Target</span><strong>{baseUrl || "Set target"}</strong><ChevronDown size={13} /></button>
+            {sessionEditor === "target" && <div className="session-popover target-popover"><div className="popover-title"><strong>API target</strong><button className="icon-button" onClick={() => setSessionEditor(null)} aria-label="Close target settings"><X size={14} /></button></div><label className="field-label">BASE URL</label><input autoFocus value={targetDraft} onChange={(event) => setTargetDraft(event.target.value)} placeholder="http://127.0.0.1:8002" onKeyDown={(event) => { if (event.key === "Enter") saveTarget(); }} /><div className="popover-actions"><button className="button button-primary" onClick={saveTarget}>Save target</button></div></div>}
+          </div>
+          <div className="session-popover-wrap">
+            <button className={`session-chip auth-chip auth-${authStatus}`} onClick={() => openSessionEditor("auth")}><KeyRound size={14} /><span className="chip-label">Auth</span><strong>{authStatus === "set" ? "Set" : authStatus === "invalid" ? "Invalid" : "Missing"}</strong><ChevronDown size={13} /></button>
+            {sessionEditor === "auth" && <div className="session-popover auth-popover"><div className="popover-title"><strong>Authentication</strong><button className="icon-button" onClick={() => setSessionEditor(null)} aria-label="Close auth settings"><X size={14} /></button></div><label className="field-label">AUTH TYPE</label><select value={authModeDraft} onChange={(event) => { setAuthModeDraft(event.target.value as AuthMode); setAuthError(""); }}><option value="bearer">Bearer token</option><option value="apikey">API key</option></select>{authModeDraft === "apikey" && <><label className="field-label">HEADER NAME</label><input value={headerDraft} onChange={(event) => { setHeaderDraft(event.target.value); setAuthError(""); }} /></>}<label className="field-label">TOKEN</label><div className="secret-input"><input type={showToken ? "text" : "password"} value={tokenDraft} onChange={(event) => { setTokenDraft(event.target.value); setAuthError(""); }} placeholder="Paste token" autoComplete="off" /><button className="icon-button" onClick={() => setShowToken((value) => !value)} aria-label={showToken ? "Hide token" : "Reveal token"}>{showToken ? <EyeOff size={15} /> : <Eye size={15} />}</button></div><div className="secret-hint">Token is masked and stays in this browser session.</div>{authError && <InlineMessage tone="error">{authError}</InlineMessage>}<div className="popover-actions"><button className="button button-quiet danger-text" onClick={clearAuth}>Clear</button><button className="button button-primary" onClick={saveAuth}>Save auth</button></div></div>}
+          </div>
+          <button className={`session-chip mutation-chip ${allowMutations ? "mutation-on" : "mutation-off"}`} onClick={() => { setAllowMutations((value) => !value); setMcpConfig(""); }} aria-pressed={allowMutations}><ShieldCheck size={14} /><span className="chip-label">Mutations</span><strong>{allowMutations ? "On" : "Off"}</strong></button>
+          <span className={`session-chip last-run-chip run-${lastRunStatus}`}><span className="status-glyph">{lastRunStatus === "good" ? "✓" : lastRunStatus === "bad" ? "!" : lastRunStatus === "inconclusive" ? "?" : "—"}</span><span className="chip-label">Last run</span><strong>{lastRunStatus === "good" ? "Good" : lastRunStatus === "bad" ? "Needs attention" : lastRunStatus === "inconclusive" ? "Inconclusive" : "Not run"}</strong></span>
         </div>
+        <div className="session-right"><span className="current-area"><span>AREA</span>{pages.find((entry) => entry.id === page)?.label}</span><button className="button button-primary header-ai" onClick={() => setPage("mcp")}><Braces size={15} />Use with AI client</button></div>
+      </header>
+
+      <div className="app-body">
+        <aside className={`app-sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
+          <div className="sidebar-heading"><span>WORKSPACE</span><button className="icon-button collapse-button" onClick={() => setSidebarCollapsed((value) => !value)} aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}>{sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}</button></div>
+          <nav className="nav-list" aria-label="Main navigation">
+            {pages.map(({ id, label, icon: Icon, badge }) => <button key={id} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => { setPage(id); setSessionEditor(null); }} title={sidebarCollapsed ? label : undefined} aria-label={label}><Icon size={17} /><span className="nav-label">{label}</span>{badge !== undefined && !sidebarCollapsed && <span className="nav-count">{badge}</span>}</button>)}
+          </nav>
+          <div className="sidebar-spacer" />
+          <div className={`mutation-note ${allowMutations ? "note-on" : "note-off"}`}><ShieldCheck size={15} /><div><strong>{allowMutations ? "MUTATIONS ON" : "SAFE BY DEFAULT"}</strong><p>{allowMutations ? "State-changing probes are enabled." : "State-changing probes are off."}</p></div></div>
+          <div className="sidebar-footer"><span className="footer-mark">PL</span><span className="footer-label">API verification</span><span className="build-version">0.1.0</span></div>
+        </aside>
+
+        <main className="main-content">
+          {page === "import" && <ImportPage specText={specText} setSpecText={setSpecText} error={importError} busy={importBusy} onFile={loadFile} onImport={() => void importSpec()} onDemo={() => void loadDemoContract()} />}
+          {page === "explorer" && <ExplorerPage model={model} selectedOperation={selectedOperation} groups={operationGroups} search={operationSearch} setSearch={setOperationSearch} collapsed={endpointsCollapsed} setCollapsed={setEndpointsCollapsed} selectOperation={setSelectedOperationId} parameters={parameterValues} setParameters={setParameterValues} body={bodyValue} setBody={setBodyValue} requestTab={requestTab} setRequestTab={setRequestTab} responseTab={responseTab} setResponseTab={setResponseTab} response={responsePayload} requestError={requestError} requestBusy={requestBusy} send={sendOperation} mutations={allowMutations} authStatus={authStatus} openAuth={() => openSessionEditor("auth")} openMcp={() => setPage("mcp")} copy={copyText} />}
+          {page === "runs" && <RunsPage model={model} roles={rolesText} setRoles={setRolesText} runBusy={runBusy} runError={runError} run={runChecks} mutations={allowMutations} report={report} summary={runSummary} statusFilter={statusFilter} setStatusFilter={setStatusFilter} search={findingSearch} setSearch={setFindingSearch} searchRef={findingSearchRef} checkFilter={checkFilter} setCheckFilter={setCheckFilter} groupBy={groupBy} setGroupBy={setGroupBy} activeCluster={activeCluster} setActiveCluster={setActiveCluster} findings={filteredFindings} selectedId={selectedFindingId} setSelectedId={setSelectedFindingId} selectedFinding={selectedFinding} rowRefs={rowRefs} copy={copyText} />}
+          {page === "mcp" && <McpPage model={model} target={baseUrl} tokenSet={!!token} mutations={allowMutations} client={mcpClient} setClient={setMcpClient} config={mcpConfig} error={mcpError} busy={mcpBusy} generate={generateMcpConfig} copy={copyText} />}
+        </main>
       </div>
+      {toast && <div className="toast" role="status"><CheckCircle2 size={16} />{toast}</div>}
     </div>
   );
 }
 
-function formatBody(body: string): string {
-  try {
-    return JSON.stringify(JSON.parse(body), null, 2);
-  } catch {
-    return body;
-  }
+function ImportPage({ specText, setSpecText, error, busy, onFile, onImport, onDemo }: { specText: string; setSpecText: (value: string) => void; error: string; busy: boolean; onFile: (file?: File) => void; onImport: () => void; onDemo: () => void }) {
+  return <section className="page import-page">
+    <PageHeading eyebrow="CONTRACT" title="Import an API" subtitle="Load an OpenAPI contract to explore endpoints and verify observed behavior." />
+    <div className="import-grid">
+      <div className="surface import-surface">
+        <div className="surface-heading"><div className="heading-icon"><FileJson2 size={17} /></div><div><h2>OpenAPI document</h2><p>JSON or YAML · OpenAPI 3.x</p></div><label className="button button-secondary file-button"><FileUp size={15} />Choose file<input type="file" accept=".json,.yaml,.yml,application/json,text/yaml" onChange={(event) => onFile(event.target.files?.[0])} /></label></div>
+        <textarea className="spec-editor" value={specText} onChange={(event) => setSpecText(event.target.value)} spellCheck={false} placeholder={'Paste or load your OpenAPI document…\n\nopenapi: 3.0.3\ninfo:\n  title: Example API\n  version: 1.0.0\npaths: {}'} />
+        <div className="editor-foot"><span><Braces size={13} />{specText ? `${specText.length.toLocaleString()} characters` : "No document loaded"}</span><span>YAML / JSON</span></div>
+        {error && <InlineMessage tone="error">{error}</InlineMessage>}
+        <div className="import-actions"><button className="button button-primary" onClick={onImport} disabled={busy}>{busy ? <LoaderCircle className="spin" size={15} /> : <FileCheck2 size={15} />}{busy ? "Validating" : "Validate and import"}<ArrowRight size={15} /></button><button className="button button-quiet" onClick={onDemo} disabled={busy}><Play size={14} />Load demo</button></div>
+      </div>
+      <aside className="import-aside"><div className="overline">AFTER IMPORT</div><div className="guide-step"><span>01</span><div><strong>Validate the spec</strong><p>Resolve references and check the OpenAPI structure.</p></div><Check size={15} /></div><div className="guide-step"><span>02</span><div><strong>Explore operations</strong><p>Choose a target separately and inspect live responses.</p></div><ArrowRight size={15} /></div><div className="guide-step"><span>03</span><div><strong>Run contract checks</strong><p>Review findings with the request and response evidence.</p></div><ArrowRight size={15} /></div><div className="notice"><CircleAlert size={16} /><span>Plumbline never infers the target URL from the OpenAPI server field.</span></div></aside>
+    </div>
+  </section>;
 }
 
-function PageHeading({ index, title, subtitle }: { index: string; title: string; subtitle: string }) {
-  return <div className="page-heading"><div className="page-index">{index}<span /></div><div><div className="eyebrow">PLUMBLINE / {index === "01" ? "CONTRACT" : index === "02" ? "EXPLORATION" : "VERIFICATION"}</div><h1>{title}</h1><p>{subtitle}</p></div><div className="heading-rule" /></div>;
+function ExplorerPage(props: {
+  model: ApiModel | null; selectedOperation: Operation | null; groups: [string, Operation[]][]; search: string; setSearch: (value: string) => void;
+  collapsed: boolean; setCollapsed: (value: boolean) => void; selectOperation: (id: string) => void; parameters: Record<string, string>;
+  setParameters: (value: (current: Record<string, string>) => Record<string, string>) => void; body: string; setBody: (value: string) => void;
+  requestTab: RequestTab; setRequestTab: (value: RequestTab) => void; responseTab: ResponseTab; setResponseTab: (value: ResponseTab) => void;
+  response: ResponsePayload | null; requestError: string; requestBusy: boolean; send: () => void; mutations: boolean;
+  authStatus: AuthStatus; openAuth: () => void; openMcp: () => void; copy: (value: string, message: string) => void;
+}) {
+  const operation = props.selectedOperation;
+  const requestParameters = operation?.parameters.filter((parameter) => ["path", "query"].includes(parameter.in)) ?? [];
+  const headerParameters = operation?.parameters.filter((parameter) => parameter.in === "header") ?? [];
+  const isMutation = !!operation && operation.method !== "GET";
+  return <section className={`page explorer-page ${props.collapsed ? "endpoints-collapsed" : ""}`}>
+    <PageHeading eyebrow="EXPLORER" title="API workspace" subtitle="Select an operation, configure its request, and inspect the response." action={<button className="button button-secondary" onClick={props.openMcp}><Braces size={15} />MCP ready <ChevronRight size={14} /></button>} />
+    {!props.model ? <EmptyState title="Import an API contract to begin" action="Go to import" /> : <div className="explorer-layout">
+      <aside className="endpoint-browser surface">
+        <div className="browser-heading"><div><div className="overline">ENDPOINTS</div><strong>{props.model.title}</strong><span>v{props.model.version} · {props.model.operations.length} operations</span></div><button className="icon-button" onClick={() => props.setCollapsed(true)} aria-label="Collapse endpoint list"><PanelLeftClose size={15} /></button></div>
+        <label className="search-control"><Search size={14} /><input value={props.search} onChange={(event) => props.setSearch(event.target.value)} placeholder="Find an operation" /><kbd>/</kbd></label>
+        <div className="endpoint-list">{props.groups.map(([tag, operations]) => <div className="endpoint-group" key={tag}><div className="endpoint-group-title">{tag}<span>{operations.length}</span></div>{operations.map((item) => <button key={item.id} className={`endpoint-item ${operation?.id === item.id ? "selected" : ""}`} onClick={() => props.selectOperation(item.id)}><MethodBadge method={item.method} /><span className="endpoint-path">{item.path}</span></button>)}</div>)}{!props.groups.length && <div className="empty-filter">No operations match.</div>}</div>
+      </aside>
+      <div className="workspace-column">{props.collapsed && <button className="button button-quiet expand-endpoints" onClick={() => props.setCollapsed(false)}><PanelLeftOpen size={15} />Show endpoints</button>}
+        {operation ? <>
+          <div className="operation-summary surface"><div className="crumb">{operationTag(operation)}<ChevronRight size={13} />{operation.id}</div><div className="operation-title"><MethodBadge method={operation.method} /><h2>{operation.path}</h2><button className="icon-button" onClick={() => props.copy(operation.path, "Path copied")} aria-label="Copy endpoint path"><Copy size={14} /></button></div><p>{operation.summary || "No operation description."}</p><div className="operation-meta"><span><LockKeyhole size={12} />{operation.security.length ? "Auth required by spec" : "No auth declared"}</span><span>{operation.parameters.length} parameters</span><span className={`mcp-ready ${props.model ? "ready" : ""}`}><Braces size={12} />MCP tools ready</span></div></div>
+          <div className="workbench-grid">
+            <section className="surface request-card">
+              <div className="card-title-row"><div><span className="step-number">01</span><h3>Request</h3></div><button className="button button-secondary send-button" onClick={props.send} disabled={props.requestBusy || (isMutation && !props.mutations)}>{props.requestBusy ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}Send request</button></div>
+              <div className="request-tabs">{(["Params", "Body", "Auth", "Headers"] as RequestTab[]).map((tab) => <button key={tab} className={props.requestTab === tab ? "active" : ""} onClick={() => props.setRequestTab(tab)}>{tab}{tab === "Params" && requestParameters.length > 0 && <span>{requestParameters.length}</span>}{tab === "Headers" && headerParameters.length > 0 && <span>{headerParameters.length}</span>}</button>)}</div>
+              {props.requestTab === "Params" && <div className="tab-content parameter-grid">{requestParameters.length ? requestParameters.map((parameter) => <ParameterInput key={`${parameter.in}:${parameter.name}`} parameter={parameter} value={props.parameters[parameter.name] ?? ""} onChange={(value) => props.setParameters((current) => ({ ...current, [parameter.name]: value }))} />) : <EmptyInline>No path or query parameters for this endpoint.</EmptyInline>}</div>}
+              {props.requestTab === "Body" && <div className="tab-content">{operation.request_schema ? <><div className="body-hint">application/json {operation.request_required ? "· required" : "· optional"}</div><textarea className="body-editor" value={props.body} onChange={(event) => props.setBody(event.target.value)} spellCheck={false} /></> : <EmptyInline>This operation does not define a request body.</EmptyInline>}</div>}
+              {props.requestTab === "Auth" && <div className="tab-content auth-info"><div className={`auth-state auth-${props.authStatus}`}><KeyRound size={16} /><div><strong>Session auth: {props.authStatus}</strong><span>Credential is managed from the global session bar.</span></div><button className="button button-secondary" onClick={props.openAuth}>Edit auth</button></div><p>OpenAPI security: {operation.security.length ? operation.security.join(", ") : "No security requirement for this operation"}</p></div>}
+              {props.requestTab === "Headers" && <div className="tab-content parameter-grid">{headerParameters.length ? headerParameters.map((parameter) => <ParameterInput key={`${parameter.in}:${parameter.name}`} parameter={parameter} value={props.parameters[parameter.name] ?? ""} onChange={(value) => props.setParameters((current) => ({ ...current, [parameter.name]: value }))} />) : <EmptyInline>No operation-specific headers.</EmptyInline>}</div>}
+              {isMutation && !props.mutations && <InlineMessage tone="warning">Mutations are off. Turn them on in the session bar to send this request.</InlineMessage>}
+              {props.requestError && <InlineMessage tone="error">{props.requestError}</InlineMessage>}
+              <div className="request-foot"><ShieldCheck size={13} />Requests go through the local Plumbline backend.</div>
+            </section>
+            <section className="surface response-card"><div className="card-title-row"><div><span className="step-number">02</span><h3>Response</h3></div>{props.response && <StatusBadge status={props.response.status < 400 ? "pass" : "fail"} label={`HTTP ${props.response.status}`} />}</div>
+              <div className="request-tabs response-tabs">{(["Body", "Headers", "Timing"] as ResponseTab[]).map((tab) => <button key={tab} className={props.responseTab === tab ? "active" : ""} onClick={() => props.setResponseTab(tab)}>{tab}</button>)}</div>
+              {props.response ? <>
+                {props.responseTab === "Body" && <><div className="response-url"><code>{props.response.url}</code><button className="icon-button" onClick={() => props.copy(pretty(props.response?.body), "Response copied")} aria-label="Copy response body"><Copy size={14} /></button></div><pre className="response-body">{pretty(props.response.body)}</pre></>}
+                {props.responseTab === "Headers" && <pre className="response-body">{pretty(props.response.headers)}</pre>}
+                {props.responseTab === "Timing" && <div className="timing-view"><div><span>Round trip</span><strong>{props.response.elapsed_ms.toFixed(0)} ms</strong></div><div className="timing-track"><span style={{ width: `${Math.min(100, Math.max(4, props.response.elapsed_ms / 10))}%` }} /></div><p>Measured by the Plumbline UI around the live request.</p></div>}
+              </> : <div className="response-empty"><div className="response-empty-icon"><Terminal size={20} /></div><strong>No response yet</strong><p>Send a request to inspect its status, body, headers, and timing.</p></div>}
+            </section>
+          </div>
+        </> : <EmptyState title="Choose an endpoint" action="Select an operation from the list" />}
+      </div>
+    </div>}
+  </section>;
 }
 
-function InlineError({ children }: { children: string }) {
-  return <div className="inline-error"><CircleAlert size={14} /><span>{children}</span></div>;
+function RunsPage(props: {
+  model: ApiModel | null; roles: string; setRoles: (value: string) => void; runBusy: boolean; runError: string; run: () => void;
+  mutations: boolean; report: RunReport | null; summary: RunSummary | null; statusFilter: "all" | "fail" | "pass" | "inconclusive";
+  setStatusFilter: (value: "all" | "fail" | "pass" | "inconclusive") => void; search: string; setSearch: (value: string) => void;
+  searchRef: React.RefObject<HTMLInputElement | null>; checkFilter: string; setCheckFilter: (value: string) => void;
+  groupBy: "none" | "check" | "endpoint" | "cluster"; setGroupBy: (value: "none" | "check" | "endpoint" | "cluster") => void;
+  activeCluster: string | null; setActiveCluster: (value: string | null) => void; findings: Finding[]; selectedId: string;
+  setSelectedId: (value: string) => void; selectedFinding: Finding | null; rowRefs: React.MutableRefObject<Record<string, HTMLTableRowElement | null>>;
+  copy: (value: string, message: string) => void;
+}) {
+  const model = props.model;
+  const operations = useMemo(() => new Map((model?.operations ?? []).map((operation) => [operation.id, operation])), [model]);
+  const checks = [...new Set((props.report?.findings ?? []).map((finding) => finding.check))].sort();
+  const groups = useMemo(() => {
+    if (props.groupBy === "none") return [{ key: "", label: "", findings: props.findings }];
+    const grouped = new Map<string, Finding[]>();
+    for (const finding of props.findings) {
+      const key = props.groupBy === "check" ? finding.check : props.groupBy === "cluster" ? finding.cluster_key : operations.get(finding.operation_id ?? "")?.path ?? "API";
+      grouped.set(key, [...(grouped.get(key) ?? []), finding]);
+    }
+    const clusterTitles = new Map((props.summary?.clusters ?? []).map((cluster) => [cluster.cluster_key, cluster.title]));
+    return [...grouped.entries()].map(([key, findings]) => ({
+      key,
+      label: props.groupBy === "cluster" ? clusterTitles.get(key) ?? key : key,
+      findings,
+    }));
+  }, [props.findings, props.groupBy, operations, props.summary]);
+  const counts = props.summary?.counts ?? props.report?.summary ?? {};
+  return <section className="page runs-page">
+    <PageHeading eyebrow="RUNS" title="Run analysis" subtitle="Understand the outcome first, then drill into the evidence that explains it." action={model && <button className="button button-primary" onClick={props.run} disabled={props.runBusy}>{props.runBusy ? <LoaderCircle size={15} className="spin" /> : <Play size={15} />}{props.runBusy ? "Running checks" : "Run checks"}</button>} />
+    {!model ? <EmptyState title="Import an API before running checks" action="Go to import" /> : <>
+      <div className="run-config surface"><div className="run-config-copy"><div className="heading-icon"><Settings2 size={16} /></div><div><strong>Run configuration</strong><span>Target, auth, and mutation mode come from the session bar.</span></div><span className={`mutation-inline ${props.mutations ? "on" : "off"}`}>Mutations {props.mutations ? "On" : "Off"}</span></div><div className="run-options"><label className="field-label" htmlFor="role-config">ROLE CONFIGURATION <span>OPTIONAL JSON ARRAY</span></label><textarea id="role-config" className="roles-editor" value={props.roles} onChange={(event) => props.setRoles(event.target.value)} placeholder={'[{"name":"viewer","token":"...","allowed_operation_ids":["list_items"]}]'} /></div>{props.runError && <InlineMessage tone="error">{props.runError}</InlineMessage>}<div className="run-config-actions"><span className="muted"><ShieldCheck size={13} />Mutations are controlled in the session bar.</span><button className="button button-primary" onClick={props.run} disabled={props.runBusy}>{props.runBusy ? <LoaderCircle size={14} className="spin" /> : <Play size={14} />}{props.runBusy ? "Running checks" : "Run checks"}<ArrowRight size={14} /></button></div></div>
+      {props.report && props.summary && <>
+        <section className="run-overview">
+          <div className="verdict-row"><div><div className="overline">LATEST RUN · {props.report.run_id.slice(0, 10)}</div><h2>{props.summary.verdict}</h2></div><a className="button button-secondary" href={`${API}/runs/${props.report.run_id}/report.html`} target="_blank" rel="noreferrer"><ArrowDownToLine size={14} />HTML report</a></div>
+          <div className="overview-grid">
+            <div className="surface overview-card result-card"><div className="card-label">RESULTS</div><div className="result-numbers"><span className="fail-text">{counts.fail ?? 0} failed</span><span className="warn-text">{counts.inconclusive ?? 0} inconclusive</span><span className="pass-text">{counts.pass ?? 0} passed</span></div><StackedResultBar counts={counts} /></div>
+            <div className="surface overview-card"><div className="card-label">SEVERITY × STATUS</div><SeverityMatrix matrix={props.summary.severity_status} /></div>
+            <div className="surface overview-card"><div className="card-label">FAILURES BY CHECK</div><CheckBars items={props.summary.failures_by_check} /></div>
+          </div>
+          <div className="surface attention-card"><div className="section-heading"><div><div className="overline">PRIORITIZED TRIAGE</div><h3>Needs attention</h3></div><span className="attention-count">{props.summary.clusters.length} clusters</span></div>{props.summary.clusters.length ? <div className="cluster-grid">{props.summary.clusters.map((cluster) => <button key={cluster.cluster_key} className={`cluster-card ${props.activeCluster === cluster.cluster_key ? "selected" : ""}`} onClick={() => { props.setActiveCluster(props.activeCluster === cluster.cluster_key ? null : cluster.cluster_key); props.setStatusFilter("fail"); }}><div className="cluster-top"><SeverityBadge severity={cluster.severity} /><span className="cluster-count">{cluster.count} findings</span></div><strong>{cluster.check}</strong><p>{cluster.observed || cluster.expected}</p><div className="cluster-endpoints">{cluster.sample_endpoints.map((endpoint) => <code key={`${cluster.cluster_key}:${endpoint.operation_id}`}>{endpoint.method} {endpoint.path}</code>)}</div></button>)}</div> : <div className="empty-inline">No failed clusters in this run.</div>}</div>
+        </section>
+        <section className="triage-section surface">
+          <div className="triage-heading"><div><div className="overline">FINDINGS</div><h2>Review and filter</h2></div><div className="keyboard-hint"><kbd>j</kbd><kbd>k</kbd> move <kbd>Enter</kbd> inspect <kbd>/</kbd> search</div></div>
+          <div className="triage-filters"><div className="segmented">{(["all", "fail", "inconclusive", "pass"] as const).map((status) => <button key={status} className={props.statusFilter === status ? "active" : ""} onClick={() => { props.setStatusFilter(status); props.setActiveCluster(null); }}>{status === "all" ? "All" : statusLabel(status)}<span>{status === "all" ? props.report?.findings.length ?? 0 : counts[status] ?? 0}</span></button>)}</div><label className="search-control finding-search"><Search size={14} /><input ref={props.searchRef} value={props.search} onChange={(event) => props.setSearch(event.target.value)} placeholder="Search operation id or path" /><kbd>/</kbd></label><select value={props.checkFilter} onChange={(event) => props.setCheckFilter(event.target.value)} aria-label="Filter by check"><option value="all">All checks</option>{checks.map((check) => <option key={check}>{check}</option>)}</select><select value={props.groupBy} onChange={(event) => props.setGroupBy(event.target.value as typeof props.groupBy)} aria-label="Group findings"><option value="none">No grouping</option><option value="check">Group by check</option><option value="endpoint">Group by endpoint</option><option value="cluster">Group by cluster</option></select>{props.activeCluster && <button className="button button-quiet clear-cluster" onClick={() => props.setActiveCluster(null)}><X size={13} />Clear cluster</button>}</div>
+          <div className="findings-layout"><div className="findings-table-wrap"><table className="findings-table"><thead><tr><th>STATUS</th><th>SEVERITY</th><th>OPERATION</th><th>CHECK</th><th>VARIANT</th></tr></thead><tbody>{groups.flatMap((group) => [
+            ...(props.groupBy !== "none" ? [<tr className="group-row" key={`group:${group.key}`}><td colSpan={5}>{group.label} <span>{group.findings.length}</span></td></tr>] : []),
+            ...group.findings.map((finding) => <tr key={finding.id} tabIndex={0} ref={(node) => { props.rowRefs.current[finding.id] = node; }} className={`finding-row ${props.selectedId === finding.id ? "selected" : ""}`} onClick={() => props.setSelectedId(finding.id)} onKeyDown={(event) => { if (event.key === "Enter") props.setSelectedId(finding.id); }}><td><StatusBadge status={finding.status} label={statusLabel(finding.status)} /></td><td>{finding.status === "pass" ? null : <SeverityBadge severity={finding.severity} />}</td><td><code>{finding.operation_id ?? "API"}</code><span className="row-path">{operations.get(finding.operation_id ?? "")?.path}</span></td><td>{finding.check}</td><td>{finding.variant ?? ""}</td></tr>),
+          ])}{!props.findings.length && <tr><td colSpan={5} className="empty-cell">No findings match these filters.</td></tr>}</tbody></table></div>
+            <aside className="finding-detail" aria-label="Finding detail">{props.selectedFinding ? <FindingDetail finding={props.selectedFinding} operation={operations.get(props.selectedFinding.operation_id ?? "")} copy={props.copy} /> : <div className="detail-empty"><Search size={18} /><span>Select a finding to inspect evidence.</span></div>}</aside>
+          </div>
+        </section>
+      </>}
+    </>}
+  </section>;
 }
 
-function EmptyState({ title, action, onClick }: { title: string; action: string; onClick: () => void }) {
-  return <div className="empty-state panel"><div className="empty-state-icon"><FileJson2 size={21} /></div><h2>{title}</h2><p>Your imported API model is shared by the explorer, MCP server and test runner.</p><button className="button button-primary" onClick={onClick}>{action}<ArrowRight size={14} /></button></div>;
+function McpPage({ model, target, tokenSet, mutations, client, setClient, config, error, busy, generate, copy }: {
+  model: ApiModel | null; target: string; tokenSet: boolean; mutations: boolean;
+  client: "Claude Desktop" | "Cursor"; setClient: (value: "Claude Desktop" | "Cursor") => void; config: string;
+  error: string; busy: boolean; generate: () => void; copy: (value: string, message: string) => void;
+}) {
+  const mutationMethods = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+  const mutationToolCount = model?.operations.filter((operation) => mutationMethods.has(operation.method.toUpperCase())).length ?? 0;
+  const readOnly = (model?.operations.length ?? 0) - mutationToolCount;
+  return <section className="page mcp-page"><PageHeading eyebrow="MCP" title="Use this API with an AI client" subtitle="Expose the imported contract as MCP tools for local coding assistants." />
+    <div className="surface mcp-intro"><div className="heading-icon"><Braces size={17} /></div><div><strong>What MCP does here</strong><p>Plumbline turns each OpenAPI operation into a tool an MCP client can discover and call against your selected target.</p></div><div className="mcp-target"><span>SESSION TARGET</span><code>{target || "Not set"}</code></div></div>
+    {!model ? <EmptyState title="Import an API to generate MCP tools" action="Go to import" /> : <div className="mcp-layout"><div className="surface mcp-config-card"><div className="section-heading"><div><div className="overline">CLIENT CONFIGURATION</div><h2>Connect a client</h2></div><span className="ready-indicator"><span />API loaded</span></div><div className="client-tabs">{(["Claude Desktop", "Cursor"] as const).map((item) => <button key={item} className={client === item ? "active" : ""} onClick={() => setClient(item)}>{item}</button>)}</div><div className="path-note">The configuration embeds the currently imported API model and your session target.</div><div className="mcp-tool-counts"><div><span>READ ONLY</span><strong>{readOnly}</strong><small>GET tools</small></div><div><span>STATE CHANGING</span><strong>{mutationToolCount}</strong><small>POST / PUT / PATCH / DELETE</small></div></div><div className="mcp-token-note"><KeyRound size={15} /><span>{tokenSet ? "The config references PLUMBLINE_TOKEN from the client environment. The token itself is never included." : "No session token set. The MCP server will connect without configured auth."}</span></div>{error && <InlineMessage tone="error">{error}</InlineMessage>}<div className="mcp-actions"><button className="button button-primary" onClick={generate} disabled={busy}>{busy ? <LoaderCircle size={14} className="spin" /> : <Braces size={14} />}Generate {client} config</button><button className="button button-secondary" disabled title="Requires local MCP process support."><Activity size={14} />Test connection</button></div></div>
+      <div className="surface generated-config"><div className="section-heading"><div><div className="overline">GENERATED CONFIG</div><h2>{config ? "Ready to paste" : "Configuration preview"}</h2></div>{config && <button className="icon-button" onClick={() => copy(config, "Config copied")} aria-label="Copy MCP configuration"><Copy size={15} /></button>}</div>{config ? <pre>{config}</pre> : <div className="config-placeholder"><Braces size={24} /><strong>Config appears here</strong><span>Choose a client and generate its MCP server configuration.</span></div>}<div className={`readonly-note ${mutations ? "mutations-enabled" : ""}`}><ShieldCheck size={14} />{mutations ? "State-changing tools are enabled in this config." : "State-changing tools are blocked by default by the MCP server."}</div></div></div>}
+  </section>;
 }
+
+function PageHeading({ eyebrow, title, subtitle, action }: { eyebrow: string; title: string; subtitle: string; action?: React.ReactNode }) {
+  return <div className="page-heading"><div><div className="overline">PLUMBLINE / {eyebrow}</div><h1>{title}</h1><p>{subtitle}</p></div>{action && <div className="heading-action">{action}</div>}</div>;
+}
+
+function InlineMessage({ children, tone }: { children: React.ReactNode; tone: "error" | "warning" }) {
+  return <div className={`inline-message ${tone}`}>{tone === "error" ? <CircleAlert size={14} /> : <AlertTriangle size={14} />}<span>{children}</span></div>;
+}
+
+function EmptyInline({ children }: { children: React.ReactNode }) { return <div className="empty-inline">{children}</div>; }
+
+function EmptyState({ title, action }: { title: string; action: string }) { return <div className="empty-state surface"><div className="empty-state-icon"><FileJson2 size={21} /></div><h2>{title}</h2><p>The imported API model is shared by the explorer, MCP server, and test runner.</p><span className="empty-action">{action}<ArrowRight size={14} /></span></div>; }
+
+function MethodBadge({ method }: { method: string }) { return <span className={`method-badge method-${method.toLowerCase()}`}>{method}</span>; }
 
 function ParameterInput({ parameter, value, onChange }: { parameter: Parameter; value: string; onChange: (value: string) => void }) {
-  const schema = parameter.schema ?? {};
-  const type = String(schema.type ?? "string");
-  const enumValues = Array.isArray(schema.enum) ? schema.enum : [];
-  return <div className="parameter-field"><label className="field-label">{parameter.name}<span className="param-location">{parameter.in}</span>{parameter.required && <i>*</i>}</label>{enumValues.length ? <select value={value} onChange={(event) => onChange(event.target.value)}>{enumValues.map((entry) => <option key={String(entry)} value={String(entry)}>{String(entry)}</option>)}</select> : type === "boolean" ? <select value={value} onChange={(event) => onChange(event.target.value)}><option value="">Select</option><option value="true">true</option><option value="false">false</option></select> : <input type={type === "integer" || type === "number" ? "number" : "text"} value={value} onChange={(event) => onChange(event.target.value)} placeholder={parameter.description || `Enter ${parameter.name}`} />}{parameter.description && <small>{parameter.description}</small>}</div>;
+  const schema = parameter.schema ?? {}; const type = String(schema.type ?? "string"); const enumValues = Array.isArray(schema.enum) ? schema.enum : [];
+  return <div className="parameter-field"><label className="field-label">{parameter.name}<span className="param-location">{parameter.in}</span>{parameter.required && <i>*</i>}</label>{enumValues.length ? <select value={value} onChange={(event) => onChange(event.target.value)}>{enumValues.map((entry) => <option key={String(entry)} value={String(entry)}>{String(entry)}</option>)}</select> : type === "boolean" ? <select value={value} onChange={(event) => onChange(event.target.value)}><option value="">Select value</option><option value="true">true</option><option value="false">false</option></select> : <input type={type === "integer" || type === "number" ? "number" : "text"} value={value} onChange={(event) => onChange(event.target.value)} placeholder={parameter.in === "path" ? `{${parameter.name}}` : parameter.description || `Enter ${parameter.name}`} />}{parameter.description && <small>{parameter.description}</small>}</div>;
 }
 
-function StatusPill({ label, tone }: { label: string; tone: string }) {
-  return <span className={`status-pill status-${tone}`}><span />{label}</span>;
+function StatusBadge({ status, label }: { status: "pass" | "fail" | "inconclusive"; label: string }) { return <span className={`status-badge status-${status}`}><span aria-hidden="true">{status === "pass" ? "✓" : status === "fail" ? "!" : "?"}</span>{label}</span>; }
+function SeverityBadge({ severity }: { severity: string }) { return <span className={`severity-badge severity-${severity}`}>{severity}</span>; }
+
+function StackedResultBar({ counts }: { counts: Record<string, number> }) {
+  const total = (counts.pass ?? 0) + (counts.fail ?? 0) + (counts.inconclusive ?? 0);
+  return <div className="stacked-result" role="img" aria-label={`Pass ${counts.pass ?? 0}, fail ${counts.fail ?? 0}, inconclusive ${counts.inconclusive ?? 0}`}>{total > 0 && <><span className="pass-segment" style={{ width: `${(counts.pass ?? 0) * 100 / total}%` }} /><span className="fail-segment" style={{ width: `${(counts.fail ?? 0) * 100 / total}%` }} /><span className="inconclusive-segment" style={{ width: `${(counts.inconclusive ?? 0) * 100 / total}%` }} /></>}</div>;
 }
 
-function FindingDetail({ finding, copyHint, onCopy }: { finding: Finding; copyHint: string; onCopy: () => void }) {
-  return <><div className="detail-heading"><div><span className={`severity severity-${finding.severity}`}>{finding.severity}</span><StatusPill label={statusLabel(finding.status)} tone={finding.status} /></div><button className="icon-button" onClick={onCopy} title="Copy evidence">{copyHint ? <Check size={14} /> : <Copy size={14} />}</button></div><h3>{finding.check}<span> / {finding.operation_id ?? "API"}</span></h3><div className="expect-observe"><div><span>EXPECTED</span><p>{finding.expected || "No expectation recorded."}</p></div><div><span>OBSERVED</span><p>{finding.observed || "No response detail recorded."}</p></div></div><EvidenceBlock title="REQUEST EVIDENCE" evidence={finding.request} /><EvidenceBlock title="RESPONSE EVIDENCE" evidence={finding.response} /></>;
+function SeverityMatrix({ matrix }: { matrix: Record<string, Record<string, number>> }) {
+  return <table className="severity-matrix"><thead><tr><th></th><th>Fail</th><th>Inconcl.</th><th>Pass</th></tr></thead><tbody>{["high", "medium", "low", "info"].map((severity) => <tr key={severity}><th>{severity}</th><td className={(matrix[severity]?.fail ?? 0) ? "fail-text" : ""}>{matrix[severity]?.fail ?? 0}</td><td className={(matrix[severity]?.inconclusive ?? 0) ? "warn-text" : ""}>{matrix[severity]?.inconclusive ?? 0}</td><td className={(matrix[severity]?.pass ?? 0) ? "pass-text" : ""}>{matrix[severity]?.pass ?? 0}</td></tr>)}</tbody></table>;
 }
 
-function EvidenceBlock({ title, evidence }: { title: string; evidence?: Evidence | null }) {
-  return <div className="evidence-block"><div className="evidence-title">{title}</div><pre>{evidence ? pretty(evidence) : "No evidence available"}</pre></div>;
+function CheckBars({ items }: { items: { check: string; count: number }[] }) {
+  const max = Math.max(1, ...items.map((item) => item.count));
+  return <div className="check-bars">{items.length ? items.map((item) => <div className="check-bar-row" key={item.check}><span>{item.check}</span><div><i style={{ width: `${item.count * 100 / max}%` }} /></div><strong>{item.count}</strong></div>) : <div className="empty-inline">No failed checks.</div>}
+  </div>;
+}
+
+function FindingDetail({ finding, operation, copy }: { finding: Finding; operation?: Operation; copy: (value: string, message: string) => void }) {
+  return <><div className="detail-top"><div><StatusBadge status={finding.status} label={statusLabel(finding.status)} />{finding.status !== "pass" && <SeverityBadge severity={finding.severity} />}</div><button className="icon-button" onClick={() => copy(pretty(finding), "Finding copied")} aria-label="Copy finding"><Copy size={14} /></button></div><h3>{finding.check}<span> / {finding.operation_id ?? "API"}</span></h3><div className="detail-endpoint"><MethodBadge method={operation?.method ?? "API"} /><code>{operation?.path ?? finding.operation_id ?? "API"}</code>{finding.variant && <span className="variant-label">Variant: {finding.variant}</span>}</div><div className="expect-observe"><section><span>EXPECTED</span><p>{finding.expected || "No expectation recorded."}</p></section><section><span>OBSERVED</span><p>{finding.observed || "No observation recorded."}</p></section></div><EvidencePanel title="REQUEST EVIDENCE" evidence={finding.request} /><EvidencePanel title="RESPONSE EVIDENCE" evidence={finding.response} /><div className="curl-panel"><div><span className="overline">REPRODUCE</span><button className="button button-quiet" onClick={() => copy(curlFor(finding), "Curl command copied")}><Clipboard size={13} />Copy curl</button></div><pre>{curlFor(finding)}</pre></div></>;
+}
+
+function EvidencePanel({ title, evidence }: { title: string; evidence?: Evidence | null }) {
+  return <details className="evidence-panel"><summary>{title}<ChevronDown size={13} /></summary>{evidence ? <pre>{pretty(evidence)}</pre> : <div className="empty-inline">No evidence was captured.</div>}</details>;
 }
 
 export default App;

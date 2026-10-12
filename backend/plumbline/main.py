@@ -1,6 +1,7 @@
 """Plumbline contract import and test-run APIs."""
 
 import asyncio
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import AnyHttpUrl, BaseModel, Field, model_validator
 
+from plumbline.analysis import build_run_summary
 from plumbline.models import ApiModel, AuthConfig, Finding, RunConfig, RunReport
 from plumbline.parser import SpecValidationError, parse_openapi
 from plumbline.report import render_html
@@ -71,10 +73,12 @@ async def get_model() -> ApiModel:
 async def get_mcp_config(spec_path: str, base_url: AnyHttpUrl) -> dict:
     """Return a Claude Desktop/Cursor MCP configuration for an explicit target."""
     project_path = Path(__file__).resolve().parents[2]
+    local_uv = project_path / ".venv" / "bin" / "uv"
+    uv_command = shutil.which("uv") or (str(local_uv) if local_uv.is_file() else "uv")
     config = {
         "mcpServers": {
             "plumbline": {
-                "command": "uv",
+                "command": uv_command,
                 "args": [
                     "run",
                     "--project",
@@ -217,6 +221,16 @@ async def get_json_report(run_id: str) -> RunReport:
     return record["report"]
 
 
+@app.get("/api/runs/{run_id}/summary")
+async def get_run_summary(run_id: str) -> dict:
+    record = getattr(app.state, "runs", {}).get(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if record["report"] is None:
+        raise HTTPException(status_code=409, detail="Run is not complete")
+    return build_run_summary(record["report"], record["api_model"])
+
+
 @app.get("/api/runs/{run_id}/report.html", response_class=HTMLResponse)
 async def get_html_report(run_id: str) -> HTMLResponse:
     record = getattr(app.state, "runs", {}).get(run_id)
@@ -224,4 +238,4 @@ async def get_html_report(run_id: str) -> HTMLResponse:
         raise HTTPException(status_code=404, detail="Run not found")
     if record["report"] is None:
         raise HTTPException(status_code=409, detail="Run is not complete")
-    return HTMLResponse(render_html(record["report"]))
+    return HTMLResponse(render_html(record["report"], record["api_model"]))

@@ -159,6 +159,7 @@ def make_finding(
     observation: Observation | None = None,
     severity: str = "medium",
     suffix: str = "result",
+    variant: str | None = None,
 ) -> Finding:
     operation_id = operation.id if operation else None
     return Finding(
@@ -169,6 +170,7 @@ def make_finding(
         operation_id=operation_id,
         expected=expected,
         observed=observed,
+        variant=variant,
         request=observation.request if observation else None,
         response=observation.response if observation else None,
     )

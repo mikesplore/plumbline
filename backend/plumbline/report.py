@@ -6,8 +6,9 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from plumbline.analysis import build_run_summary
+
 TEMPLATE_DIR = Path(__file__).parent / "templates"
-SEVERITY_ORDER = ("high", "medium", "low", "info")
 _environment = Environment(
     loader=FileSystemLoader(TEMPLATE_DIR),
     autoescape=select_autoescape(["html", "xml"]),
@@ -38,19 +39,19 @@ def _curl_command(finding) -> str | None:
     return " \\" + "\n  ".join(parts)
 
 
-def _findings_by_severity(report) -> list[dict]:
-    groups = []
-    for severity in SEVERITY_ORDER:
-        findings = [finding for finding in report.findings if finding.severity == severity]
-        if findings:
-            groups.append({"severity": severity, "findings": findings})
-    return groups
-
-
-def render_html(report) -> str:
+def render_html(report, api_model=None) -> str:
     template = _environment.get_template("report.html")
+    summary = build_run_summary(report, api_model)
+    paths = {
+        operation.id: operation.path
+        for operation in api_model.operations
+    } if api_model else {}
     return template.render(
         report=report,
-        finding_groups=_findings_by_severity(report),
+        summary=summary,
+        failures=[finding for finding in report.findings if finding.status == "fail"],
+        inconclusive=[finding for finding in report.findings if finding.status == "inconclusive"],
+        passed=[finding for finding in report.findings if finding.status == "pass"],
+        operation_paths=paths,
         curl_commands={finding.id: _curl_command(finding) for finding in report.findings},
     )
