@@ -57,6 +57,32 @@ async def get_model() -> ApiModel:
     return model
 
 
+@app.get("/api/mcp-config")
+async def get_mcp_config(spec_path: str, base_url: AnyHttpUrl) -> dict:
+    """Return a Claude Desktop/Cursor MCP configuration for an explicit target."""
+    project_path = Path(__file__).resolve().parents[2]
+    config = {
+        "mcpServers": {
+            "plumbline": {
+                "command": "uv",
+                "args": [
+                    "run",
+                    "--project",
+                    str(project_path),
+                    "python",
+                    "-m",
+                    "plumbline.mcp_server",
+                    "--spec",
+                    str(Path(spec_path).expanduser().resolve()),
+                    "--base-url",
+                    str(base_url),
+                ],
+            }
+        }
+    }
+    return config
+
+
 async def _execute_run(run_id: str, config: RunConfig) -> None:
     record = app.state.runs[run_id]
     try:

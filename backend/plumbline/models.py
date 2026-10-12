@@ -13,6 +13,7 @@ class Operation(BaseModel):
     summary: str = ""
     parameters: list[dict] = Field(default_factory=list)
     request_schema: dict | None = None
+    request_required: bool = False
     responses: dict[str, dict | None] = Field(default_factory=dict)
     security: list[str] = Field(default_factory=list)
 
