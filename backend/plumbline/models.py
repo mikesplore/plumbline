@@ -27,6 +27,7 @@ class ApiModel(BaseModel):
     version: str
     servers: list[str] = Field(default_factory=list)
     security_schemes: dict[str, dict] = Field(default_factory=dict)
+    schemas: dict[str, dict] = Field(default_factory=dict)
     operations: list[Operation] = Field(default_factory=list)
 
 
@@ -101,3 +102,4 @@ class RunConfig(BaseModel):
     roles: list[RoleConfig] = Field(default_factory=list)
     allow_mutations: bool = False
     rate_limit: RateLimitConfig | None = None
+    operation_ids: list[str] | None = None

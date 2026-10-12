@@ -13,7 +13,7 @@ type Operation = {
   parameters: Parameter[]; request_schema?: Record<string, unknown> | null;
   request_required?: boolean; security: string[];
 };
-type ApiModel = { title: string; version: string; operations: Operation[]; security_schemes?: Record<string, Record<string, string>> };
+type ApiModel = { title: string; version: string; operations: Operation[]; schemas?: Record<string, Record<string, unknown>>; security_schemes?: Record<string, Record<string, string>> };
 type Evidence = { method?: string; url?: string; headers?: Record<string, string>; body?: unknown; status?: number | null; body_snippet?: string; elapsed_ms?: number | null };
 type Finding = {
   id: string; check: string; severity: "info" | "low" | "medium" | "high";
@@ -89,8 +89,21 @@ function pretty(value: unknown): string {
 }
 
 function operationTag(operation: Operation): string {
-  const tag = operation.tags?.find((value) => value.trim());
-  return tag || operation.path.split("/").filter(Boolean)[0] || "Other";
+  const tag = operation.tags?.find((value) => value.trim() && !/^(api|default|v\d+)$/i.test(value.trim()));
+  if (tag) return tag;
+  const segments = operation.path.split("/").filter(Boolean);
+  return segments.find((segment) => segment.toLowerCase() !== "api" && segment.toLowerCase() !== "admin" && !/^v\d+$/i.test(segment)) ?? "Other";
+}
+
+function schemaRelations(schema: Record<string, unknown>): string[] {
+  const properties = schema.properties && typeof schema.properties === "object"
+    ? Object.entries(schema.properties as Record<string, Record<string, unknown>>)
+    : [];
+  return properties.flatMap(([property, definition]) => {
+    const item = definition.items && typeof definition.items === "object" ? definition.items as Record<string, unknown> : {};
+    const references = [definition.$ref, item.$ref].filter((value): value is string => typeof value === "string");
+    return references.map((reference) => `${property} → ${decodeURIComponent(reference.split("/").at(-1) ?? reference)}`);
+  });
 }
 
 function curlFor(finding: Finding): string {
@@ -151,6 +164,8 @@ function App() {
   const [rolesText, setRolesText] = useState("");
   const [runBusy, setRunBusy] = useState(false);
   const [runError, setRunError] = useState("");
+  const [runScopeMode, setRunScopeMode] = useState<"all" | "groups">("all");
+  const [selectedRunGroups, setSelectedRunGroups] = useState<string[]>([]);
   const [report, setReport] = useState<RunReport | null>(null);
   const [runSummary, setRunSummary] = useState<RunSummary | null>(null);
   const [statusFilter, setStatusFilter] = useState<"all" | "fail" | "pass" | "inconclusive">("all");
@@ -329,7 +344,7 @@ function App() {
     setImportBusy(true); setImportError("");
     try {
       const imported = await apiRequest<ApiModel>(`${API}/import`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ spec: text }) });
-      setModel(imported); setSelectedOperationId(imported.operations[0]?.id ?? ""); setPage("explorer"); setLastRunStatus("none"); localStorage.removeItem("plumbline-last-run-id"); setReport(null); setRunSummary(null); setToast(`Imported ${imported.operations.length} operations`);
+      setModel(imported); setSelectedOperationId(imported.operations[0]?.id ?? ""); setRunScopeMode("all"); setSelectedRunGroups([]); setPage("explorer"); setLastRunStatus("none"); localStorage.removeItem("plumbline-last-run-id"); setReport(null); setRunSummary(null); setToast(`Imported ${imported.operations.length} operations`);
     } catch (error) { setImportError(error instanceof Error ? error.message : "Could not import the contract."); }
     finally { setImportBusy(false); }
   }
@@ -338,7 +353,7 @@ function App() {
     setImportBusy(true); setImportError("");
     try {
       const imported = await apiRequest<ApiModel>(`${API}/import`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: DEMO_SPEC_URL }) });
-      setModel(imported); setSelectedOperationId(imported.operations[0]?.id ?? ""); setPage("explorer"); setLastRunStatus("none"); localStorage.removeItem("plumbline-last-run-id"); setReport(null); setRunSummary(null); setToast("Demo contract loaded");
+      setModel(imported); setSelectedOperationId(imported.operations[0]?.id ?? ""); setRunScopeMode("all"); setSelectedRunGroups([]); setPage("explorer"); setLastRunStatus("none"); localStorage.removeItem("plumbline-last-run-id"); setReport(null); setRunSummary(null); setToast("Demo contract loaded");
     } catch (error) { setImportError(error instanceof Error ? error.message : "Could not load the demo contract."); }
     finally { setImportBusy(false); }
   }
@@ -378,12 +393,16 @@ function App() {
   async function runChecks() {
     if (!model) { setRunError("Import a contract before starting a run."); return; }
     if (!baseUrl.trim()) { setRunError("Set a target in Settings before starting a run."); return; }
+    const scopedOperationIds = runScopeMode === "groups"
+      ? model.operations.filter((operation) => selectedRunGroups.includes(operationTag(operation))).map((operation) => operation.id)
+      : undefined;
+    if (scopedOperationIds && !scopedOperationIds.length) { setRunError("Select at least one operation group for this run."); return; }
     let roles: unknown[] = [];
     try { roles = rolesText.trim() ? JSON.parse(rolesText) : []; if (!Array.isArray(roles)) throw new Error("Roles must be a JSON array."); }
     catch (error) { setRunError(error instanceof Error ? error.message : "Roles must be valid JSON."); return; }
     setRunError(""); setRunBusy(true); setReport(null); setRunSummary(null); setActiveCluster(null);
     try {
-      const created = await apiRequest<{ run_id: string }>(`${API}/runs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ base_url: baseUrl, auth: token ? { type: authMode, token, header_name: apiKeyHeader } : null, roles, allow_mutations: allowMutations }) });
+      const created = await apiRequest<{ run_id: string }>(`${API}/runs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ base_url: baseUrl, auth: token ? { type: authMode, token, header_name: apiKeyHeader } : null, roles, allow_mutations: allowMutations, operation_ids: scopedOperationIds }) });
       for (let attempt = 0; attempt < 180; attempt += 1) {
         const state = await apiRequest<{ status: string }>(`${API}/runs/${created.run_id}`);
         if (state.status === "completed") {
@@ -468,7 +487,7 @@ function App() {
         <main className="main-content">
           {page === "import" && <ImportPage specText={specText} setSpecText={setSpecText} error={importError} busy={importBusy} onFile={loadFile} onImport={() => void importSpec()} onDemo={() => void loadDemoContract()} />}
           {page === "explorer" && <ExplorerPage model={model} selectedOperation={selectedOperation} groups={operationGroups} search={operationSearch} setSearch={setOperationSearch} collapsed={endpointsCollapsed} setCollapsed={setEndpointsCollapsed} selectOperation={setSelectedOperationId} parameters={parameterValues} setParameters={setParameterValues} body={bodyValue} setBody={setBodyValue} requestTab={requestTab} setRequestTab={setRequestTab} responseTab={responseTab} setResponseTab={setResponseTab} response={responsePayload} requestError={requestError} requestBusy={requestBusy} send={sendOperation} mutations={allowMutations} authStatus={authStatus} openAuth={() => openSettings("auth")} openMcp={() => setPage("mcp")} copy={copyText} />}
-          {page === "runs" && <RunsPage model={model} roles={rolesText} setRoles={setRolesText} runBusy={runBusy} runError={runError} run={runChecks} mutations={allowMutations} report={report} summary={runSummary} statusFilter={statusFilter} setStatusFilter={setStatusFilter} search={findingSearch} setSearch={setFindingSearch} searchRef={findingSearchRef} checkFilter={checkFilter} setCheckFilter={setCheckFilter} groupBy={groupBy} setGroupBy={setGroupBy} activeCluster={activeCluster} setActiveCluster={setActiveCluster} findings={filteredFindings} selectedId={selectedFindingId} setSelectedId={setSelectedFindingId} selectedFinding={selectedFinding} rowRefs={rowRefs} copy={copyText} />}
+          {page === "runs" && <RunsPage model={model} roles={rolesText} setRoles={setRolesText} runBusy={runBusy} runError={runError} run={runChecks} mutations={allowMutations} scopeMode={runScopeMode} setScopeMode={setRunScopeMode} selectedGroups={selectedRunGroups} setSelectedGroups={setSelectedRunGroups} report={report} summary={runSummary} statusFilter={statusFilter} setStatusFilter={setStatusFilter} search={findingSearch} setSearch={setFindingSearch} searchRef={findingSearchRef} checkFilter={checkFilter} setCheckFilter={setCheckFilter} groupBy={groupBy} setGroupBy={setGroupBy} activeCluster={activeCluster} setActiveCluster={setActiveCluster} findings={filteredFindings} selectedId={selectedFindingId} setSelectedId={setSelectedFindingId} selectedFinding={selectedFinding} rowRefs={rowRefs} copy={copyText} />}
           {page === "mcp" && <McpPage model={model} target={baseUrl} tokenSet={!!token} mutations={allowMutations} config={mcpConfig} error={mcpError} busy={mcpBusy} generate={generateMcpConfig} copy={copyText} />}
           {page === "settings" && <SettingsPage target={targetDraft} setTarget={setTargetDraft} saveTarget={saveTarget} authStatus={authStatus} authMode={authModeDraft} setAuthMode={setAuthModeDraft} header={headerDraft} setHeader={setHeaderDraft} token={tokenDraft} setToken={setTokenDraft} showToken={showToken} setShowToken={setShowToken} authError={authError} clearError={() => setAuthError("")} saveAuth={saveAuth} clearAuth={clearAuth} mutations={allowMutations} setMutations={(value) => { setAllowMutations(value); setMcpConfig(""); }} />}
         </main>
@@ -581,6 +600,8 @@ function ExplorerPage(props: {
 
 function RunsPage(props: {
   model: ApiModel | null; roles: string; setRoles: (value: string) => void; runBusy: boolean; runError: string; run: () => void;
+  scopeMode: "all" | "groups"; setScopeMode: (value: "all" | "groups") => void;
+  selectedGroups: string[]; setSelectedGroups: (value: string[]) => void;
   mutations: boolean; report: RunReport | null; summary: RunSummary | null; statusFilter: "all" | "fail" | "pass" | "inconclusive";
   setStatusFilter: (value: "all" | "fail" | "pass" | "inconclusive") => void; search: string; setSearch: (value: string) => void;
   searchRef: React.RefObject<HTMLInputElement | null>; checkFilter: string; setCheckFilter: (value: string) => void;
@@ -591,6 +612,15 @@ function RunsPage(props: {
 }) {
   const model = props.model;
   const operations = useMemo(() => new Map((model?.operations ?? []).map((operation) => [operation.id, operation])), [model]);
+  const scopeGroups = useMemo(() => {
+    const grouped = new Map<string, Operation[]>();
+    for (const operation of model?.operations ?? []) {
+      const group = operationTag(operation);
+      grouped.set(group, [...(grouped.get(group) ?? []), operation]);
+    }
+    return [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b));
+  }, [model]);
+  const schemas = Object.entries(model?.schemas ?? {}).sort(([a], [b]) => a.localeCompare(b));
   const checks = [...new Set((props.report?.findings ?? []).map((finding) => finding.check))].sort();
   const groups = useMemo(() => {
     if (props.groupBy === "none") return [{ key: "", label: "", findings: props.findings }];
@@ -608,9 +638,20 @@ function RunsPage(props: {
   }, [props.findings, props.groupBy, operations, props.summary]);
   const counts = props.summary?.counts ?? props.report?.summary ?? {};
   return <section className="page runs-page">
-    <PageHeading subtitle="Understand the outcome first, then drill into the evidence that explains it." action={model && <button className="button button-primary" onClick={props.run} disabled={props.runBusy}>{props.runBusy ? <LoaderCircle size={15} className="spin" /> : <Play size={15} />}{props.runBusy ? "Running checks" : "Run checks"}</button>} />
+    <PageHeading subtitle="Choose which areas of the imported API to check, then review the evidence." />
     {!model ? <EmptyState title="Import an API before running checks" action="Go to import" /> : <>
-      <div className="run-config surface"><div className="run-config-copy"><div className="heading-icon"><Settings2 size={16} /></div><div><strong>Run configuration</strong><span>Target, auth, and mutation mode are managed in Settings.</span></div><span className={`mutation-inline ${props.mutations ? "on" : "off"}`}>Mutations {props.mutations ? "On" : "Off"}</span></div><div className="run-options"><label className="field-label" htmlFor="role-config">ROLE CONFIGURATION <span>OPTIONAL JSON ARRAY</span></label><textarea id="role-config" className="roles-editor" value={props.roles} onChange={(event) => props.setRoles(event.target.value)} placeholder={'[{"name":"viewer","token":"...","allowed_operation_ids":["list_items"]}]'} /></div>{props.runError && <InlineMessage tone="error">{props.runError}</InlineMessage>}<div className="run-config-actions"><span className="muted"><ShieldCheck size={13} />Mutation safety is controlled in Settings.</span><button className="button button-primary" onClick={props.run} disabled={props.runBusy}>{props.runBusy ? <LoaderCircle size={14} className="spin" /> : <Play size={14} />}{props.runBusy ? "Running checks" : "Run checks"}<ArrowRight size={14} /></button></div></div>
+      <div className="run-config surface">
+        <div className="run-config-copy"><div className="heading-icon"><Settings2 size={16} /></div><div><strong>Run configuration</strong><span>Target, auth, and mutation mode are managed in Settings.</span></div><span className={`mutation-inline ${props.mutations ? "on" : "off"}`}>Mutations {props.mutations ? "On" : "Off"}</span></div>
+        <section className="run-scope">
+          <div className="run-scope-heading"><div><strong>Run scope</strong><span>Choose all operations or select groups from the document.</span></div><div className="scope-mode segmented"><button className={props.scopeMode === "all" ? "active" : ""} onClick={() => props.setScopeMode("all")}>All operations <span>{model.operations.length}</span></button><button className={props.scopeMode === "groups" ? "active" : ""} onClick={() => props.setScopeMode("groups")}>Selected groups</button></div></div>
+          {props.scopeMode === "groups" && <div className="scope-group-list">{scopeGroups.map(([group, groupOperations]) => <label className="scope-group" key={group}><input type="checkbox" checked={props.selectedGroups.includes(group)} onChange={(event) => props.setSelectedGroups(event.target.checked ? [...props.selectedGroups, group] : props.selectedGroups.filter((item) => item !== group))} /><span><strong>{group}</strong><small>{groupOperations.length} operations</small></span></label>)}</div>}
+          {props.scopeMode === "groups" && !props.selectedGroups.length && <p className="scope-empty">Select one or more groups to start a scoped run.</p>}
+        </section>
+        <details className="contract-structure"><summary><span>Document schemas and relationships</span><small>{schemas.length} named schemas</small></summary>{schemas.length ? <div className="schema-table-wrap"><table className="schema-table"><thead><tr><th>SCHEMA</th><th>FIELDS</th><th>RELATIONSHIPS</th></tr></thead><tbody>{schemas.map(([name, schema]) => { const properties = schema.properties && typeof schema.properties === "object" ? Object.keys(schema.properties as Record<string, unknown>) : []; const relations = schemaRelations(schema); return <tr key={name}><th>{name}</th><td>{properties.length ? properties.map((field) => <code key={field}>{field}</code>) : <span className="muted">No named fields</span>}</td><td>{relations.length ? relations.map((relation) => <code key={relation}>{relation}</code>) : <span className="muted">No direct references</span>}</td></tr>; })}</tbody></table></div> : <p className="schema-empty">This document has no named component schemas to map.</p>}</details>
+        <div className="run-options"><label className="field-label" htmlFor="role-config">ROLE CONFIGURATION <span>OPTIONAL JSON ARRAY</span></label><textarea id="role-config" className="roles-editor" value={props.roles} onChange={(event) => props.setRoles(event.target.value)} placeholder={'[{"name":"viewer","token":"...","allowed_operation_ids":["list_items"]}]'} /></div>
+        {props.runError && <InlineMessage tone="error">{props.runError}</InlineMessage>}
+        <div className="run-config-actions"><span className="muted"><ShieldCheck size={13} />Mutation safety is controlled in Settings.</span><button className="button button-primary" onClick={props.run} disabled={props.runBusy || (props.scopeMode === "groups" && !props.selectedGroups.length)}>{props.runBusy ? <LoaderCircle size={14} className="spin" /> : <Play size={14} />}{props.runBusy ? "Running checks" : props.scopeMode === "all" ? "Run all operations" : `Run ${props.selectedGroups.length} selected groups`}<ArrowRight size={14} /></button></div>
+      </div>
       {props.report && props.summary && <>
         <section className="run-overview">
           <div className="verdict-row"><div><div className="eyebrow">LATEST RUN · {props.report.run_id.slice(0, 10)}</div><h2>{props.summary.verdict}</h2></div><a className="button button-secondary" href={`${API}/runs/${props.report.run_id}/report.html`} target="_blank" rel="noreferrer"><ArrowDownToLine size={14} />HTML report</a></div>

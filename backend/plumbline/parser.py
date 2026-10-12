@@ -57,7 +57,7 @@ def _operation_id(method: str, path: str) -> str:
 
 def parse_openapi(spec_text: str) -> ApiModel:
     """Validate JSON/YAML OpenAPI text, resolve references, and normalize it."""
-    _load_document(spec_text)
+    source_document = _load_document(spec_text)
     try:
         from prance import ResolvingParser
 
@@ -107,11 +107,13 @@ def parse_openapi(spec_text: str) -> ApiModel:
             ))
 
     schemes = ((document.get("components") or {}).get("securitySchemes") or {})
+    schemas = ((source_document.get("components") or {}).get("schemas") or {})
     servers = [server["url"] for server in document.get("servers", []) if isinstance(server, Mapping) and "url" in server]
     return ApiModel(
         title=info.get("title") or "Untitled API",
         version=info.get("version") or "",
         servers=servers,
         security_schemes=dict(schemes),
+        schemas={name: dict(schema) for name, schema in schemas.items() if isinstance(schema, Mapping)},
         operations=operations,
     )

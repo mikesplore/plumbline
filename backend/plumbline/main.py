@@ -182,6 +182,18 @@ async def start_run(config: RunConfig) -> dict[str, str]:
     api_model = getattr(app.state, "api_model", None)
     if api_model is None:
         raise HTTPException(status_code=409, detail="Import an API contract before starting a run")
+    scoped_model = api_model
+    if config.operation_ids is not None:
+        selected_ids = set(config.operation_ids)
+        if not selected_ids:
+            raise HTTPException(status_code=422, detail="Select at least one operation for a scoped run")
+        known_ids = {operation.id for operation in api_model.operations}
+        unknown_ids = selected_ids - known_ids
+        if unknown_ids:
+            raise HTTPException(status_code=422, detail=f"Unknown operation id(s): {', '.join(sorted(unknown_ids))}")
+        scoped_model = api_model.model_copy(update={
+            "operations": [operation for operation in api_model.operations if operation.id in selected_ids],
+        })
     run_id = uuid4().hex
     if not hasattr(app.state, "runs"):
         app.state.runs = {}
@@ -190,7 +202,7 @@ async def start_run(config: RunConfig) -> dict[str, str]:
     app.state.runs[run_id] = {
         "status": "running",
         "started_at": datetime.now(timezone.utc),
-        "api_model": api_model,
+        "api_model": scoped_model,
         "report": None,
     }
     task = asyncio.create_task(_execute_run(run_id, config))

@@ -36,6 +36,7 @@ def test_parse_json_resolves_refs_and_normalizes_operations():
     assert model.operations[0].parameters[0]["name"] == "item_id"
     assert model.operations[0].responses["200"]["properties"]["price"]["type"] == "number"
     assert model.operations[0].security == ["BearerAuth"]
+    assert model.schemas["Item"]["properties"]["price"]["type"] == "number"
 
 
 def test_parse_yaml():
