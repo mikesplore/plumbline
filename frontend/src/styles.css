@@ -35,15 +35,11 @@ code, pre, .mono { font-family: var(--mono); }
 
 .app-shell { min-height: 100vh; }
 .session-bar { position: sticky; z-index: 10; top: 0; display: flex; min-height: 64px; align-items: center; gap: 16px; padding: 8px 20px; border-bottom: 1px solid var(--border); background: #141720; }
-.brand-button { display: flex; flex: 0 0 auto; align-items: center; gap: 9px; padding: 0; border: 0; background: transparent; cursor: pointer; }
-.brand-icon, .heading-icon { display: grid; width: 32px; height: 32px; flex: 0 0 auto; place-items: center; border: 1px solid #405274; border-radius: 8px; background: #202b40; color: var(--accent); }
-.brand-name { color: var(--text); font-size: 16px; font-weight: 650; letter-spacing: -.5px; }
-.brand-name span { color: var(--accent); }
-.header-divider { width: 1px; height: 30px; background: var(--border); }
-.session-context { display: grid; min-width: 120px; grid-template-columns: auto auto; align-items: baseline; gap: 1px 8px; }
-.session-caption, .current-area > span, .eyebrow { color: var(--muted); font: 11px var(--mono); letter-spacing: .06em; }
-.session-context strong { overflow: hidden; max-width: min(240px, 20vw); font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.version-label { grid-column: 2; color: var(--muted); font-size: 12px; }
+.header-breadcrumb { display: flex; min-width: 0; align-items: center; gap: 8px; color: var(--muted); font: 11px var(--mono); letter-spacing: .07em; }
+.header-breadcrumb > svg { color: var(--faint); }
+.header-breadcrumb strong { color: var(--text); font-weight: 550; }
+.heading-icon { display: grid; width: 32px; height: 32px; flex: 0 0 auto; place-items: center; border: 1px solid #405274; border-radius: 8px; background: #202b40; color: var(--accent); }
+.eyebrow { color: var(--muted); font: 11px var(--mono); letter-spacing: .06em; }
 .session-chip { display: inline-flex; min-height: 34px; max-width: 255px; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--raised); color: var(--subtle); font-size: 12px; white-space: nowrap; cursor: pointer; }
 .session-chip strong { overflow: hidden; color: var(--text); font-size: 12px; font-weight: 580; text-overflow: ellipsis; }
 .chip-label { color: var(--muted); }
@@ -121,8 +117,7 @@ input, select, textarea { color: var(--text); }
 .sidebar-collapsed .main-content { width: calc(100% - 64px); }
 .page { max-width: 1600px; min-height: calc(100vh - 128px); margin: 0 auto; }
 .page-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 2px 0 24px; }
-.page-heading .eyebrow, .eyebrow { color: var(--muted); font: 11px var(--mono); letter-spacing: .07em; }
-.page-heading h1 { margin: 7px 0 0; color: var(--text); font-size: 28px; font-weight: 620; letter-spacing: -.7px; }
+.page-heading h1 { margin: 0; color: var(--text); font-size: 28px; font-weight: 620; letter-spacing: -.7px; }
 .settings-layout { display: grid; max-width: 920px; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 14px; }
 .settings-card { min-width: 0; padding: 20px; }
 .settings-card-heading { display: flex; align-items: flex-start; gap: 12px; }
@@ -410,13 +405,10 @@ input, select, textarea { color: var(--text); }
 }
 @media (max-width: 960px) {
   .session-bar { flex-wrap: wrap; gap: 7px; }
-  .session-context { min-width: 100px; }
-  .session-context strong { max-width: 125px; font-size: 13px; }
   .session-right { order: 4; gap: 6px; margin-left: auto; }
   .header-ai { padding: 0 8px; font-size: 12px; }
   .last-run-chip { order: 3; max-width: 125px; gap: 5px; padding-right: 7px; padding-left: 7px; font-size: 11px; }
   .last-run-chip strong { max-width: 73px; font-size: 11px; }
-  .app-sidebar { top: 106px; height: calc(100vh - 106px); }
 }
 @media (max-width: 920px) {
   .app-sidebar { width: 64px; padding-right: 8px; padding-left: 8px; }
@@ -431,8 +423,7 @@ input, select, textarea { color: var(--text); }
 }
 @media (max-width: 680px) {
   .session-bar { min-height: auto; flex-wrap: wrap; gap: 7px; padding: 8px; }
-  .brand-button { margin-right: auto; }
-  .header-divider, .session-context { display: none; }
+  .header-breadcrumb { margin-right: auto; }
   .session-chip { min-height: 32px; }
   .session-right { order: 4; margin-left: auto; }
   .last-run-chip { padding: 0 8px; }
