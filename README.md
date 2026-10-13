@@ -74,6 +74,45 @@ Run checks from the Runs screen or submit a `POST /api/runs` request with a JSON
 
 Completed runs provide JSON and HTML reports. The HTML report groups findings by severity, keeps request and response evidence collapsible, and includes a curl command for findings with request evidence. Authorization and API key headers in runner evidence are redacted.
 
+## CLI and CI
+
+Install the project, then run checks from a terminal or CI job. The command uses the same runner as the Runs screen. Path fixtures can be supplied as JSON or YAML, for example `fixtures.json` containing `{"id":"1"}`. Reports include JSON, HTML, and JUnit XML.
+
+```sh
+uv run plumbline run \
+  --spec openapi.yaml \
+  --base-url https://api.example.test \
+  --token-env API_TOKEN \
+  --fixtures fixtures.json \
+  --fail-on medium \
+  --out reports
+```
+
+Set `API_TOKEN` in the environment before running the command. The default failure threshold is `low`. Only failed findings at or above the threshold return exit code 1. Usage errors and runs where every attempted request fails to connect return exit code 2. Passing runs return 0.
+
+The composite GitHub Action runs the CLI and uploads the report directory as a workflow artifact. Add it after checking out the repository and make the token available through an environment variable:
+
+```yaml
+name: API conformance
+on: [push, pull_request]
+jobs:
+  verify-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./
+        with:
+          spec: openapi.yaml
+          base-url: ${{ vars.API_BASE_URL }}
+          token-env: API_TOKEN
+          fixtures: ci/fixtures.yaml
+          fail-on: medium
+        env:
+          API_TOKEN: ${{ secrets.API_TOKEN }}
+```
+
+This repository exposes the action from its root `action.yml`, so use `./.` after checking out the repository. The action uploads `report.json`, `report.html`, and `junit.xml`, then returns the CLI exit code.
+
 ## Safety
 
 - Provide a base URL explicitly for every run and Explorer request.

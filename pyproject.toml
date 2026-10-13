@@ -17,6 +17,9 @@ dependencies = [
     "uvicorn>=0.30",
 ]
 
+[project.scripts]
+plumbline = "plumbline.cli:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.3",

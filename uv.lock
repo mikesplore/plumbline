@@ -907,7 +907,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "jinja2", specifier = ">=3.1" },
     { name = "jsonschema", specifier = ">=4.23" },
-    { name = "mcp", specifier = ">=1.0" },
+    { name = "mcp", specifier = ">=2.3.0" },
     { name = "openapi-spec-validator", specifier = ">=0.7" },
     { name = "prance", specifier = ">=25.4" },
     { name = "pydantic", specifier = ">=2.9" },

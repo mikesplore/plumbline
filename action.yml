@@ -1,0 +1,94 @@
+name: Plumbline API conformance
+description: Run Plumbline checks and upload JSON, HTML, and JUnit reports
+inputs:
+  spec:
+    description: OpenAPI document path relative to the workspace, or a URL
+    required: true
+  base-url:
+    description: Explicit API target URL
+    required: true
+  token-env:
+    description: Name of an environment variable containing a bearer token
+    required: false
+    default: ""
+  roles:
+    description: Optional JSON or YAML role configuration file
+    required: false
+    default: ""
+  fixtures:
+    description: Optional JSON or YAML path fixture file
+    required: false
+    default: ""
+  allow-mutations:
+    description: Enable state-changing checks
+    required: false
+    default: "false"
+  fail-on:
+    description: Minimum finding severity that fails the action
+    required: false
+    default: low
+  out:
+    description: Report directory relative to the workspace
+    required: false
+    default: plumbline-report
+  artifact-name:
+    description: Name for the uploaded report artifact
+    required: false
+    default: plumbline-report
+runs:
+  using: composite
+  steps:
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        enable-cache: true
+    - name: Install Plumbline
+      shell: bash
+      env:
+        PLUMBLINE_ACTION_PATH: ${{ github.action_path }}
+      run: uv sync --project "$PLUMBLINE_ACTION_PATH" --locked --no-dev
+    - name: Run Plumbline
+      id: plumbline
+      shell: bash
+      env:
+        PLUMBLINE_ACTION_PATH: ${{ github.action_path }}
+        PLUMBLINE_SPEC: ${{ inputs.spec }}
+        PLUMBLINE_BASE_URL: ${{ inputs.base-url }}
+        PLUMBLINE_TOKEN_ENV: ${{ inputs.token-env }}
+        PLUMBLINE_ROLES: ${{ inputs.roles }}
+        PLUMBLINE_FIXTURES: ${{ inputs.fixtures }}
+        PLUMBLINE_ALLOW_MUTATIONS: ${{ inputs.allow-mutations }}
+        PLUMBLINE_FAIL_ON: ${{ inputs.fail-on }}
+        PLUMBLINE_OUT: ${{ inputs.out }}
+      run: |
+        set +e
+        spec="$PLUMBLINE_SPEC"
+        case "$spec" in
+          http://*|https://*) ;;
+          /*) ;;
+          *) spec="$GITHUB_WORKSPACE/$spec" ;;
+        esac
+        out="$PLUMBLINE_OUT"
+        case "$out" in /*) ;; *) out="$GITHUB_WORKSPACE/$out" ;; esac
+        args=(run --project "$PLUMBLINE_ACTION_PATH" --no-sync plumbline run --spec "$spec" --base-url "$PLUMBLINE_BASE_URL" --fail-on "$PLUMBLINE_FAIL_ON" --out "$out")
+        if [ -n "$PLUMBLINE_TOKEN_ENV" ]; then args+=(--token-env "$PLUMBLINE_TOKEN_ENV"); fi
+        if [ -n "$PLUMBLINE_ROLES" ]; then roles="$PLUMBLINE_ROLES"; case "$roles" in /*) ;; *) roles="$GITHUB_WORKSPACE/$roles" ;; esac; args+=(--roles "$roles"); fi
+        if [ -n "$PLUMBLINE_FIXTURES" ]; then fixtures="$PLUMBLINE_FIXTURES"; case "$fixtures" in /*) ;; *) fixtures="$GITHUB_WORKSPACE/$fixtures" ;; esac; args+=(--fixtures "$fixtures"); fi
+        if [ "$PLUMBLINE_ALLOW_MUTATIONS" = "true" ]; then args+=(--allow-mutations); fi
+        uv "${args[@]}"
+        result=$?
+        echo "exit_code=$result" >> "$GITHUB_OUTPUT"
+        exit 0
+    - name: Upload Plumbline reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.out }}
+        if-no-files-found: warn
+    - name: Return Plumbline status
+      if: always()
+      shell: bash
+      env:
+        PLUMBLINE_EXIT_CODE: ${{ steps.plumbline.outputs.exit_code }}
+      run: exit "${PLUMBLINE_EXIT_CODE:-2}"
