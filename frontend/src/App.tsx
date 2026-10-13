@@ -21,7 +21,7 @@ type Finding = {
   expected: string; observed: string; cluster_key: string; variant?: string | null;
   request?: Evidence | null; response?: Evidence | null;
 };
-type RunReport = { run_id: string; base_url: string; started_at: string; findings: Finding[]; summary: Record<string, number> };
+type RunReport = { run_id: string; base_url: string; started_at: string; config?: Record<string, unknown>; findings: Finding[]; summary: Record<string, number> };
 type RunSummary = {
   run_id: string; verdict: string; operation_count: number; counts: Record<string, number>;
   missing_fixture_inconclusive?: number;
@@ -32,6 +32,10 @@ type RunSummary = {
 type AuthMode = "bearer" | "apikey";
 type Page = "import" | "explorer" | "runs" | "mcp" | "settings";
 type StoredContractSource = { kind: "spec" | "url"; value: string };
+type SavedContract = { id: string; name: string; source: StoredContractSource };
+type RunPreset = { id: string; name: string; scopeMode: "all" | "groups"; groups: string[]; fixtures: string; roles: string; discoverFixtures: boolean };
+type RecentRun = { run_id: string; status: string; started_at: string; base_url: string; summary: Record<string, number> };
+type McpTestResult = { connected: boolean; tool_count: number; read_only_count: number; mutation_count: number; tools: { name: string; description: string }[] };
 
 function storedContractSource(): StoredContractSource | null {
   try {
@@ -40,6 +44,11 @@ function storedContractSource(): StoredContractSource | null {
     const parsed = JSON.parse(value) as StoredContractSource;
     return (parsed.kind === "spec" || parsed.kind === "url") && parsed.value ? parsed : null;
   } catch { return null; }
+}
+
+function storedJson<T>(key: string, fallback: T): T {
+  try { const value = localStorage.getItem(key); return value ? JSON.parse(value) as T : fallback; }
+  catch { return fallback; }
 }
 type AuthStatus = "missing" | "set" | "invalid";
 type ResponsePayload = { status: number; url: string; headers: Record<string, string>; body: unknown; elapsed_ms: number };
@@ -90,6 +99,101 @@ async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(errorMessage(payload));
   return payload as T;
+}
+
+type RequestDraft = { url: string; parameters: Record<string, unknown>; body?: unknown; error?: string };
+
+function parameterValue(parameter: Parameter, raw: string): unknown {
+  const type = parameter.schema?.type;
+  if (type === "integer" || type === "number") {
+    const value = Number(raw);
+    if (!Number.isFinite(value) || (type === "integer" && !Number.isInteger(value))) throw new Error(`${parameter.name} must be a valid ${type}.`);
+    return value;
+  }
+  if (type === "boolean") {
+    if (raw !== "true" && raw !== "false") throw new Error(`${parameter.name} must be true or false.`);
+    return raw === "true";
+  }
+  if (type === "array" || type === "object") {
+    let value: unknown;
+    try { value = JSON.parse(raw); } catch { throw new Error(`${parameter.name} must be valid JSON.`); }
+    if (type === "array" && !Array.isArray(value)) throw new Error(`${parameter.name} must be a JSON array.`);
+    if (type === "object" && (!value || typeof value !== "object" || Array.isArray(value))) throw new Error(`${parameter.name} must be a JSON object.`);
+    return value;
+  }
+  const allowed = parameter.schema?.enum;
+  if (Array.isArray(allowed) && !allowed.some((item) => String(item) === raw)) throw new Error(`${parameter.name} must match one of its allowed values.`);
+  return raw;
+}
+
+function validateBody(value: unknown, schema: Record<string, unknown>, label = "body"): string | undefined {
+  if (value === null && schema.nullable === true) return undefined;
+  const type = schema.type;
+  const valid = type === "object" ? !!value && typeof value === "object" && !Array.isArray(value)
+    : type === "array" ? Array.isArray(value)
+      : type === "integer" ? Number.isInteger(value)
+        : type === "number" ? typeof value === "number" && Number.isFinite(value)
+          : type === "boolean" ? typeof value === "boolean"
+            : type === "string" ? typeof value === "string"
+              : true;
+  if (!valid) return `${label} must be ${type}.`;
+  if (Array.isArray(schema.enum) && !schema.enum.some((item) => JSON.stringify(item) === JSON.stringify(value))) return `${label} must match one of its allowed values.`;
+  if (type === "object" && value && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    for (const required of (schema.required as string[] | undefined) ?? []) {
+      if (!(required in object)) return `${label}.${required} is required.`;
+    }
+    const properties = schema.properties as Record<string, Record<string, unknown>> | undefined;
+    for (const [key, propertySchema] of Object.entries(properties ?? {})) {
+      if (key in object) {
+        const error = validateBody(object[key], propertySchema, `${label}.${key}`);
+        if (error) return error;
+      }
+    }
+  }
+  if (type === "array" && Array.isArray(value) && schema.items && typeof schema.items === "object") {
+    for (const [index, item] of value.entries()) {
+      const error = validateBody(item, schema.items as Record<string, unknown>, `${label}[${index}]`);
+      if (error) return error;
+    }
+  }
+  return undefined;
+}
+
+function buildRequestDraft(operation: Operation | null, baseUrl: string, values: Record<string, string>, bodyText: string): RequestDraft {
+  if (!operation) return { url: "", parameters: {}, error: "Choose an operation first." };
+  if (!baseUrl.trim()) return { url: "", parameters: {}, error: "Set a target in Settings before sending a request." };
+  const parameters: Record<string, unknown> = {};
+  let path = operation.path;
+  const query = new URLSearchParams();
+  try {
+    for (const parameter of operation.parameters) {
+      const raw = values[parameter.name] ?? "";
+      if (!raw && !parameter.required) continue;
+      if (!raw && parameter.required) throw new Error(`${parameter.name} is required.`);
+      const value = parameterValue(parameter, raw);
+      parameters[parameter.name] = value;
+      if (parameter.in === "path") path = path.replaceAll(`{${parameter.name}}`, encodeURIComponent(String(value)));
+      if (parameter.in === "query") {
+        if (Array.isArray(value)) value.forEach((item) => query.append(parameter.name, String(item)));
+        else query.append(parameter.name, typeof value === "object" ? JSON.stringify(value) : String(value));
+      }
+    }
+    if (/[{}]/.test(path)) throw new Error("A required path parameter is missing.");
+    let body: unknown;
+    if (operation.request_schema && bodyText.trim()) {
+      try { body = JSON.parse(bodyText); } catch { throw new Error("Request body must be valid JSON."); }
+      const bodyError = validateBody(body, operation.request_schema);
+      if (bodyError) throw new Error(bodyError);
+    } else if (operation.request_required) {
+      throw new Error("A request body is required.");
+    }
+    const url = new URL(`${baseUrl.replace(/\/$/, "")}/${path.replace(/^\//, "")}`);
+    query.forEach((value, name) => url.searchParams.append(name, value));
+    return { url: url.toString(), parameters, body };
+  } catch (error) {
+    return { url: "", parameters: {}, error: error instanceof Error ? error.message : "Request is invalid." };
+  }
 }
 
 function pretty(value: unknown): string {
@@ -144,6 +248,9 @@ function App() {
     const source = storedContractSource();
     return source?.kind === "spec" ? source.value : "";
   });
+  const [savedContracts, setSavedContracts] = useState<SavedContract[]>(() => storedJson("plumbline-saved-contracts", []));
+  const [activeContractId, setActiveContractId] = useState(() => localStorage.getItem("plumbline-active-contract-id") ?? "");
+  const [contractNameDraft, setContractNameDraft] = useState("");
   const [importError, setImportError] = useState("");
   const [importBusy, setImportBusy] = useState(false);
   const [baseUrl, setBaseUrl] = useState(() => localStorage.getItem("plumbline-target") ?? "");
@@ -184,6 +291,7 @@ function App() {
   const [runScopeMode, setRunScopeMode] = useState<"all" | "groups">("all");
   const [selectedRunGroups, setSelectedRunGroups] = useState<string[]>([]);
   const [report, setReport] = useState<RunReport | null>(null);
+  const [reportModel, setReportModel] = useState<ApiModel | null>(null);
   const [runSummary, setRunSummary] = useState<RunSummary | null>(null);
   const [statusFilter, setStatusFilter] = useState<"all" | "fail" | "pass" | "inconclusive">("all");
   const [findingSearch, setFindingSearch] = useState("");
@@ -194,6 +302,17 @@ function App() {
   const [mcpConfig, setMcpConfig] = useState("");
   const [mcpError, setMcpError] = useState("");
   const [mcpBusy, setMcpBusy] = useState(false);
+  const [mcpTestBusy, setMcpTestBusy] = useState(false);
+  const [mcpTestError, setMcpTestError] = useState("");
+  const [mcpTestResult, setMcpTestResult] = useState<McpTestResult | null>(null);
+  const [targetCheckBusy, setTargetCheckBusy] = useState(false);
+  const [targetCheckResult, setTargetCheckResult] = useState<{ reachable: boolean; status_code: number | null; elapsed_ms: number; message: string } | null>(null);
+  const [runPresets, setRunPresets] = useState<RunPreset[]>(() => storedJson("plumbline-run-presets", []));
+  const [runPresetId, setRunPresetId] = useState("");
+  const [runPresetName, setRunPresetName] = useState("");
+  const [runHistory, setRunHistory] = useState<RecentRun[]>([]);
+  const [previousRunId, setPreviousRunId] = useState("");
+  const [previousReport, setPreviousReport] = useState<RunReport | null>(null);
   const findingSearchRef = useRef<HTMLInputElement>(null);
   const rowRefs = useRef<Record<string, HTMLElement | null>>({});
 
@@ -250,6 +369,8 @@ function App() {
   useEffect(() => { localStorage.setItem("plumbline-endpoints-collapsed", String(endpointsCollapsed)); }, [endpointsCollapsed]);
   useEffect(() => { localStorage.setItem("plumbline-run-count", String(runCount)); }, [runCount]);
   useEffect(() => { localStorage.setItem("plumbline-last-run-status", lastRunStatus); }, [lastRunStatus]);
+  useEffect(() => { try { localStorage.setItem("plumbline-saved-contracts", JSON.stringify(savedContracts)); } catch { setToast("Saved API list could not be written to browser storage"); } }, [savedContracts]);
+  useEffect(() => { try { localStorage.setItem("plumbline-run-presets", JSON.stringify(runPresets)); } catch { setToast("Run configurations could not be written to browser storage"); } }, [runPresets]);
   useEffect(() => {
     let active = true;
     const source = storedContractSource();
@@ -260,12 +381,21 @@ function App() {
       if (!active) return;
       setModel(loaded);
       setSelectedOperationId(loaded.operations[0]?.id ?? "");
-      setPage("explorer");
+      if (!new URLSearchParams(window.location.search).has("run")) setPage("explorer");
+      if (source) rememberContract(source, loaded, localStorage.getItem("plumbline-active-contract-id") || undefined);
+      else void apiRequest<{ spec: string }>(`${API}/model/source`).then(({ spec }) => { if (active) rememberContract({ kind: "spec", value: spec }, loaded); }).catch(() => undefined);
     }).catch((error) => {
       if (!active || !source) return;
       setImportError(`Could not restore the saved API contract: ${error instanceof Error ? error.message : "backend unavailable"}`);
     });
-    const savedRunId = localStorage.getItem("plumbline-last-run-id");
+    void apiRequest<RecentRun[]>(`${API}/runs`).then((history) => {
+      if (!active) return;
+      setRunHistory(history);
+      const currentId = new URLSearchParams(window.location.search).get("run") ?? localStorage.getItem("plumbline-last-run-id");
+      setPreviousRunId(history.find((run) => run.status === "completed" && run.run_id !== currentId)?.run_id ?? "");
+    }).catch(() => undefined);
+    const params = new URLSearchParams(window.location.search);
+    const savedRunId = params.get("run") ?? localStorage.getItem("plumbline-last-run-id");
     if (savedRunId) {
       void Promise.all([
         apiRequest<RunReport>(`${API}/runs/${savedRunId}/report.json`),
@@ -274,8 +404,14 @@ function App() {
         if (!active) return;
         setReport(savedReport);
         setRunSummary(savedSummary);
-        setStatusFilter(savedReport.findings.some((finding) => finding.status === "fail") ? "fail" : "all");
+        void apiRequest<ApiModel>(`${API}/runs/${savedRunId}/model`).then((savedModel) => { if (active) setReportModel(savedModel); }).catch(() => { if (active) setReportModel(null); });
+        const sharedStatus = params.get("status");
+        setStatusFilter(sharedStatus === "all" || sharedStatus === "fail" || sharedStatus === "pass" || sharedStatus === "inconclusive" ? sharedStatus : savedReport.findings.some((finding) => finding.status === "fail") ? "fail" : "all");
+        setCheckFilter(params.get("check") ?? "all");
+        setFindingSearch(params.get("q") ?? "");
         setSelectedFindingId(savedReport.findings.find((finding) => finding.status === "fail")?.id ?? savedReport.findings[0]?.id ?? "");
+        setActiveCluster(params.get("cluster"));
+        if (params.get("run")) setPage("runs");
       }).catch(() => {
         if (!active) return;
         localStorage.removeItem("plumbline-last-run-id");
@@ -283,6 +419,14 @@ function App() {
     }
     return () => { active = false; };
   }, []);
+  useEffect(() => {
+    if (!previousRunId || previousRunId === report?.run_id) { setPreviousReport(null); return; }
+    let active = true;
+    void apiRequest<RunReport>(`${API}/runs/${previousRunId}/report.json`).then((previous) => {
+      if (active) setPreviousReport(previous);
+    }).catch(() => { if (active) setPreviousReport(null); });
+    return () => { active = false; };
+  }, [previousRunId, report?.run_id]);
   useEffect(() => {
     if (!toast) return;
     const timer = window.setTimeout(() => setToast(""), 2800);
@@ -349,42 +493,89 @@ function App() {
     setAuthMode(authModeDraft);
     setApiKeyHeader(headerDraft);
     setAuthStatus(tokenDraft ? "set" : "missing");
-    setMcpConfig("");
+    setMcpConfig(""); setMcpTestResult(null); setMcpTestError("");
     setToast("Auth updated");
   }
 
   function clearAuth() {
-    setToken(""); setTokenDraft(""); setAuthStatus("missing"); setAuthError(""); setMcpConfig(""); setToast("Auth cleared");
+    setToken(""); setTokenDraft(""); setAuthStatus("missing"); setAuthError(""); setMcpConfig(""); setMcpTestResult(null); setMcpTestError(""); setToast("Auth cleared");
   }
 
   function saveTarget() {
     const target = targetDraft.trim().replace(/\/$/, "");
-    setBaseUrl(target); localStorage.setItem("plumbline-target", target); setMcpConfig("");
+    try {
+      const parsed = new URL(target);
+      if (!/^https?:$/.test(parsed.protocol)) throw new Error("Use an http or https URL.");
+    } catch (error) {
+      setTargetCheckResult({ reachable: false, status_code: null, elapsed_ms: 0, message: error instanceof Error ? error.message : "Enter a valid target URL." });
+      return;
+    }
+    setBaseUrl(target); localStorage.setItem("plumbline-target", target); setAuthStatus(token ? "set" : "missing"); setMcpConfig(""); setMcpTestResult(null); setMcpTestError(""); setTargetCheckResult(null);
     setToast("Target updated");
   }
 
-  function saveContractSource(source: StoredContractSource) {
-    try { localStorage.setItem("plumbline-contract-source", JSON.stringify(source)); }
-    catch { setToast("Contract loaded, but browser storage is full"); }
+  function rememberContract(source: StoredContractSource, imported: ApiModel, preferredId?: string) {
+    const existing = savedContracts.find((contract) => contract.id === (preferredId || activeContractId));
+    const id = preferredId || activeContractId || `api-${Date.now()}`;
+    const entry: SavedContract = { id, name: existing?.name || imported.title, source };
+    setSavedContracts((current) => [entry, ...current.filter((contract) => contract.id !== id)]);
+    setActiveContractId(id);
+    setContractNameDraft(entry.name);
+    try {
+      localStorage.setItem("plumbline-active-contract-id", id);
+      localStorage.setItem("plumbline-contract-source", JSON.stringify(source));
+    } catch { setToast("API loaded, but browser storage is full"); }
   }
 
-  async function importSpec(text = specText) {
-    if (!text.trim()) { setImportError("Choose a file or paste an OpenAPI document first."); return; }
+  async function activateContract(source: StoredContractSource, preferredId?: string) {
+    if (source.kind === "spec" && !source.value.trim()) { setImportError("Choose a file or paste an OpenAPI document first."); return; }
     setImportBusy(true); setImportError("");
     try {
-      const imported = await apiRequest<ApiModel>(`${API}/import`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ spec: text }) });
-      saveContractSource({ kind: "spec", value: text }); setSpecText(text); setModel(imported); setSelectedOperationId(imported.operations[0]?.id ?? ""); setRunScopeMode("all"); setSelectedRunGroups([]); setPage("explorer"); setLastRunStatus("none"); localStorage.removeItem("plumbline-last-run-id"); setReport(null); setRunSummary(null); setToast(`Imported ${imported.operations.length} operations`);
-    } catch (error) { setImportError(error instanceof Error ? error.message : "Could not import the contract."); }
+      const body = source.kind === "url" ? { url: source.value } : { spec: source.value };
+      const imported = await apiRequest<ApiModel>(`${API}/import`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      rememberContract(source, imported, preferredId);
+      setMcpTestResult(null); setMcpTestError("");
+      setSpecText(source.kind === "spec" ? source.value : ""); setModel(imported); setReportModel(null); setSelectedOperationId(imported.operations[0]?.id ?? ""); setRunScopeMode("all"); setSelectedRunGroups([]); setPage("explorer"); setLastRunStatus("none"); localStorage.removeItem("plumbline-last-run-id"); setReport(null); setRunSummary(null); setToast(`Loaded ${imported.operations.length} operations`);
+    } catch (error) { setImportError(error instanceof Error ? error.message : "Could not load the API contract."); }
     finally { setImportBusy(false); }
   }
 
-  async function loadDemoContract() {
-    setImportBusy(true); setImportError("");
+  function importSpec(text = specText) {
+    return activateContract({ kind: "spec", value: text });
+  }
+
+  function loadDemoContract() {
+    return activateContract({ kind: "url", value: DEMO_SPEC_URL });
+  }
+
+  function loadSavedContract(id: string) {
+    const contract = savedContracts.find((item) => item.id === id);
+    if (!contract) return;
+    void activateContract(contract.source, contract.id);
+  }
+
+  function renameSavedContract() {
+    const name = contractNameDraft.trim();
+    if (!activeContractId || !name) return;
+    setSavedContracts((current) => current.map((item) => item.id === activeContractId ? { ...item, name } : item));
+    setToast("Saved API renamed");
+  }
+
+  async function removeSavedContract() {
+    if (!activeContractId) return;
+    const removingActive = activeContractId === localStorage.getItem("plumbline-active-contract-id");
     try {
-      const imported = await apiRequest<ApiModel>(`${API}/import`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: DEMO_SPEC_URL }) });
-      saveContractSource({ kind: "url", value: DEMO_SPEC_URL }); setSpecText(""); setModel(imported); setSelectedOperationId(imported.operations[0]?.id ?? ""); setRunScopeMode("all"); setSelectedRunGroups([]); setPage("explorer"); setLastRunStatus("none"); localStorage.removeItem("plumbline-last-run-id"); setReport(null); setRunSummary(null); setToast("Demo contract loaded");
-    } catch (error) { setImportError(error instanceof Error ? error.message : "Could not load the demo contract."); }
-    finally { setImportBusy(false); }
+      if (removingActive) await apiRequest<{ cleared: boolean }>(`${API}/model`, { method: "DELETE" });
+      const remaining = savedContracts.filter((item) => item.id !== activeContractId);
+      setSavedContracts(remaining); setActiveContractId(""); setContractNameDraft("");
+      localStorage.removeItem("plumbline-active-contract-id");
+      if (removingActive) {
+        localStorage.removeItem("plumbline-contract-source");
+        setModel(null); setReportModel(null); setSpecText(""); setSelectedOperationId(""); setReport(null); setRunSummary(null); setLastRunStatus("none");
+        setPage("import");
+      }
+      setToast("Saved API removed");
+    } catch (error) { setImportError(error instanceof Error ? error.message : "Could not remove the saved API."); }
   }
 
   async function loadFile(file?: File) {
@@ -393,23 +584,17 @@ function App() {
   }
 
   async function sendOperation() {
-    if (!selectedOperation || !baseUrl.trim()) { setRequestError("Set a target in Settings before sending a request."); return; }
+    if (!selectedOperation) { setRequestError("Choose an operation first."); return; }
     if (selectedOperation.method !== "GET" && !allowMutations) { setRequestError("Mutations are off. Turn them on in Settings before sending this request."); return; }
-    const parameters: Record<string, unknown> = {};
     try {
-      for (const parameter of selectedOperation.parameters) {
-        const raw = parameterValues[parameter.name] ?? "";
-        if (!raw && !parameter.required) continue;
-        if (!raw && parameter.required) throw new Error(`${parameter.name} is required.`);
-        const type = parameter.schema?.type;
-        parameters[parameter.name] = type === "integer" || type === "number" ? Number(raw) : type === "boolean" ? raw === "true" : type === "array" || type === "object" ? JSON.parse(raw) : raw;
-      }
-      const body = selectedOperation.request_schema ? JSON.parse(bodyValue || "null") : undefined;
+      if (!selectedOperation) throw new Error("Choose an operation first.");
+      const draft = buildRequestDraft(selectedOperation, baseUrl, parameterValues, bodyValue);
+      if (draft.error) throw new Error(draft.error);
       setRequestBusy(true); setRequestError(""); setResponsePayload(null);
       const start = performance.now();
       const result = await apiRequest<Omit<ResponsePayload, "elapsed_ms">>(`${API}/explorer/request`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ operation_id: selectedOperation.id, base_url: baseUrl, parameters, body, auth: token ? { type: authMode, token, header_name: apiKeyHeader } : null }),
+        body: JSON.stringify({ operation_id: selectedOperation.id, base_url: baseUrl, parameters: draft.parameters, body: draft.body, auth: token ? { type: authMode, token, header_name: apiKeyHeader } : null }),
       });
       const elapsed = performance.now() - start;
       setResponsePayload({ ...result, elapsed_ms: elapsed });
@@ -446,10 +631,13 @@ function App() {
             apiRequest<RunReport>(`${API}/runs/${created.run_id}/report.json`),
             apiRequest<RunSummary>(`${API}/runs/${created.run_id}/summary`),
           ]);
-          setReport(completed); setRunSummary(summary); setSelectedFindingId(completed.findings.find((finding) => finding.status === "fail")?.id ?? completed.findings[0]?.id ?? "");
+          setReport(completed); setReportModel(model); setRunSummary(summary); setSelectedFindingId(completed.findings.find((finding) => finding.status === "fail")?.id ?? completed.findings[0]?.id ?? "");
           setStatusFilter(completed.findings.some((finding) => finding.status === "fail") ? "fail" : "all");
           const finalStatus = completed.summary.fail > 0 ? "bad" : completed.summary.inconclusive > 0 ? "inconclusive" : "good";
           setLastRunStatus(finalStatus); localStorage.setItem("plumbline-last-run-id", completed.run_id);
+          const history = await apiRequest<RecentRun[]>(`${API}/runs`);
+          setRunHistory(history);
+          setPreviousRunId(history.find((item) => item.status === "completed" && item.run_id !== completed.run_id)?.run_id ?? "");
           setRunCount((value) => value + 1); setToast("Run complete"); return;
         }
         await new Promise((resolve) => window.setTimeout(resolve, 500));
@@ -489,6 +677,70 @@ function App() {
     finally { setMcpBusy(false); }
   }
 
+  async function testMcpConnection() {
+    if (!model) { setMcpTestError("Import an API contract first."); return; }
+    if (!baseUrl.trim()) { setMcpTestError("Set the API target in Settings first."); return; }
+    setMcpTestBusy(true); setMcpTestError(""); setMcpTestResult(null);
+    try {
+      const result = await apiRequest<McpTestResult>(`${API}/mcp-test`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ base_url: baseUrl, auth: token ? { type: authMode, token, header_name: apiKeyHeader } : null, allow_mutations: allowMutations }),
+      });
+      setMcpTestResult(result);
+      setToast(`MCP connected · ${result.tool_count} tools discovered`);
+    } catch (error) { setMcpTestError(error instanceof Error ? error.message : "MCP connection test failed."); }
+    finally { setMcpTestBusy(false); }
+  }
+
+  async function checkTargetConnection() {
+    const target = targetDraft.trim() || baseUrl.trim();
+    if (!target) {
+      setTargetCheckResult({ reachable: false, status_code: null, elapsed_ms: 0, message: "Enter a base URL before checking the connection." });
+      return;
+    }
+    setTargetCheckBusy(true); setTargetCheckResult(null);
+    try {
+      const result = await apiRequest<{ reachable: boolean; status_code: number | null; elapsed_ms: number; message: string }>(`${API}/target/check`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ base_url: target, auth: tokenDraft.trim() ? { type: authModeDraft, token: tokenDraft, header_name: headerDraft } : null }),
+      });
+      setTargetCheckResult(result);
+      if (tokenDraft.trim() && (result.status_code === 401 || result.status_code === 403)) setAuthStatus("invalid");
+      else if (tokenDraft.trim() && result.reachable && (result.status_code ?? 500) < 400) setAuthStatus("set");
+      setToast(result.reachable ? `Target responded · HTTP ${result.status_code}` : "Target connection failed");
+    } catch (error) {
+      setTargetCheckResult({ reachable: false, status_code: null, elapsed_ms: 0, message: error instanceof Error ? error.message : "Target connection failed." });
+    } finally { setTargetCheckBusy(false); }
+  }
+
+  function saveRunPreset() {
+    const name = runPresetName.trim();
+    if (!name) { setRunError("Give this run configuration a name before saving."); return; }
+    let roles = rolesText;
+    try {
+      const parsed = rolesText.trim() ? JSON.parse(rolesText) : [];
+      if (!Array.isArray(parsed)) throw new Error("Roles must be a JSON array.");
+      roles = JSON.stringify(parsed.map((role) => role && typeof role === "object" ? { ...role, token: "" } : role), null, 2);
+    } catch (error) { setRunError(error instanceof Error ? error.message : "Roles must be valid JSON before saving."); return; }
+    const id = runPresetId || `run-${Date.now()}`;
+    const preset: RunPreset = { id, name, scopeMode: runScopeMode, groups: selectedRunGroups, fixtures: fixturesText, roles, discoverFixtures };
+    setRunPresets((current) => [preset, ...current.filter((item) => item.id !== id)]);
+    setRunPresetId(id); setToast("Run configuration saved"); setRunError("");
+  }
+
+  function loadRunPreset(id = runPresetId) {
+    const preset = runPresets.find((item) => item.id === id);
+    if (!preset) return;
+    setRunPresetId(preset.id); setRunPresetName(preset.name); setRunScopeMode(preset.scopeMode); setSelectedRunGroups(preset.groups);
+    setFixturesText(preset.fixtures); setRolesText(preset.roles); setDiscoverFixtures(preset.discoverFixtures); setRunError(""); setToast(`Loaded ${preset.name}`);
+  }
+
+  function deleteRunPreset() {
+    if (!runPresetId) return;
+    setRunPresets((current) => current.filter((item) => item.id !== runPresetId));
+    setRunPresetId(""); setRunPresetName(""); setToast("Run configuration removed");
+  }
+
   async function copyText(value: string, message: string) {
     try { await navigator.clipboard.writeText(value); setToast(message); }
     catch { setToast("Clipboard access is unavailable"); }
@@ -521,11 +773,11 @@ function App() {
         </aside>
 
         <main className="main-content">
-          {page === "import" && <ImportPage model={model} specText={specText} setSpecText={setSpecText} error={importError} busy={importBusy} onFile={loadFile} onImport={() => void importSpec()} onDemo={() => void loadDemoContract()} />}
-          {page === "explorer" && <ExplorerPage model={model} target={baseUrl} selectedOperation={selectedOperation} groups={operationGroups} search={operationSearch} setSearch={setOperationSearch} collapsed={endpointsCollapsed} setCollapsed={setEndpointsCollapsed} selectOperation={setSelectedOperationId} parameters={parameterValues} setParameters={setParameterValues} body={bodyValue} setBody={setBodyValue} requestTab={requestTab} setRequestTab={setRequestTab} responseTab={responseTab} setResponseTab={setResponseTab} response={responsePayload} requestError={requestError} requestBusy={requestBusy} send={sendOperation} mutations={allowMutations} authStatus={authStatus} openAuth={() => openSettings("auth")} openMcp={() => setPage("mcp")} copy={copyText} />}
-          {page === "runs" && <RunsPage model={model} target={baseUrl} authStatus={authStatus} authMode={authMode} openSettings={() => openSettings()} roles={rolesText} setRoles={setRolesText} fixtures={fixturesText} setFixtures={setFixturesText} discoverFixtures={discoverFixtures} setDiscoverFixtures={setDiscoverFixtures} fixturesOpen={fixturesOpen} setFixturesOpen={setFixturesOpen} runBusy={runBusy} runError={runError} run={runChecks} mutations={allowMutations} scopeMode={runScopeMode} setScopeMode={setRunScopeMode} selectedGroups={selectedRunGroups} setSelectedGroups={setSelectedRunGroups} report={report} summary={runSummary} statusFilter={statusFilter} setStatusFilter={setStatusFilter} search={findingSearch} setSearch={setFindingSearch} searchRef={findingSearchRef} checkFilter={checkFilter} setCheckFilter={setCheckFilter} groupBy={groupBy} setGroupBy={setGroupBy} activeCluster={activeCluster} setActiveCluster={setActiveCluster} findings={filteredFindings} selectedId={selectedFindingId} setSelectedId={setSelectedFindingId} selectedFinding={selectedFinding} rowRefs={rowRefs} copy={copyText} />}
-          {page === "mcp" && <McpPage model={model} target={baseUrl} tokenSet={!!token} mutations={allowMutations} config={mcpConfig} error={mcpError} busy={mcpBusy} generate={generateMcpConfig} copy={copyText} />}
-          {page === "settings" && <SettingsPage target={targetDraft} setTarget={setTargetDraft} saveTarget={saveTarget} authStatus={authStatus} authMode={authModeDraft} setAuthMode={setAuthModeDraft} header={headerDraft} setHeader={setHeaderDraft} token={tokenDraft} setToken={setTokenDraft} showToken={showToken} setShowToken={setShowToken} authError={authError} clearError={() => setAuthError("")} saveAuth={saveAuth} clearAuth={clearAuth} mutations={allowMutations} setMutations={(value) => { setAllowMutations(value); setMcpConfig(""); setToast(value ? "State-changing requests enabled" : "State-changing requests disabled"); }} />}
+          {page === "import" && <ImportPage model={model} specText={specText} setSpecText={setSpecText} error={importError} busy={importBusy} contracts={savedContracts} activeContractId={activeContractId} contractName={contractNameDraft} setContractName={setContractNameDraft} selectContract={loadSavedContract} renameContract={renameSavedContract} removeContract={() => void removeSavedContract()} onFile={loadFile} onImport={() => void importSpec()} onDemo={() => void loadDemoContract()} />}
+          {page === "explorer" && <ExplorerPage model={model} target={baseUrl} selectedOperation={selectedOperation} groups={operationGroups} search={operationSearch} setSearch={setOperationSearch} collapsed={endpointsCollapsed} setCollapsed={setEndpointsCollapsed} selectOperation={setSelectedOperationId} parameters={parameterValues} setParameters={setParameterValues} body={bodyValue} setBody={setBodyValue} requestTab={requestTab} setRequestTab={setRequestTab} responseTab={responseTab} setResponseTab={setResponseTab} response={responsePayload} requestError={requestError} requestBusy={requestBusy} send={sendOperation} mutations={allowMutations} authStatus={authStatus} openAuth={() => openSettings("auth")} openSettings={() => openSettings()} openMcp={() => setPage("mcp")} copy={copyText} />}
+          {page === "runs" && <RunsPage model={model} reportModel={reportModel} target={baseUrl} authStatus={authStatus} authMode={authMode} openSettings={() => openSettings()} roles={rolesText} setRoles={setRolesText} fixtures={fixturesText} setFixtures={setFixturesText} discoverFixtures={discoverFixtures} setDiscoverFixtures={setDiscoverFixtures} fixturesOpen={fixturesOpen} setFixturesOpen={setFixturesOpen} runBusy={runBusy} runError={runError} run={runChecks} mutations={allowMutations} scopeMode={runScopeMode} setScopeMode={setRunScopeMode} selectedGroups={selectedRunGroups} setSelectedGroups={setSelectedRunGroups} report={report} summary={runSummary} statusFilter={statusFilter} setStatusFilter={setStatusFilter} search={findingSearch} setSearch={setFindingSearch} searchRef={findingSearchRef} checkFilter={checkFilter} setCheckFilter={setCheckFilter} groupBy={groupBy} setGroupBy={setGroupBy} activeCluster={activeCluster} setActiveCluster={setActiveCluster} findings={filteredFindings} selectedId={selectedFindingId} setSelectedId={setSelectedFindingId} selectedFinding={selectedFinding} rowRefs={rowRefs} copy={copyText} presets={runPresets} presetId={runPresetId} setPresetId={setRunPresetId} presetName={runPresetName} setPresetName={setRunPresetName} savePreset={saveRunPreset} loadPreset={loadRunPreset} deletePreset={deleteRunPreset} history={runHistory} previousRunId={previousRunId} setPreviousRunId={setPreviousRunId} previousReport={previousReport} />}
+          {page === "mcp" && <McpPage model={model} target={baseUrl} tokenSet={!!token} mutations={allowMutations} config={mcpConfig} error={mcpError} busy={mcpBusy} generate={generateMcpConfig} copy={copyText} test={testMcpConnection} testBusy={mcpTestBusy} testError={mcpTestError} testResult={mcpTestResult} />}
+          {page === "settings" && <SettingsPage target={targetDraft} setTarget={(value) => { setTargetDraft(value); setTargetCheckResult(null); }} saveTarget={saveTarget} checkTarget={checkTargetConnection} checkingTarget={targetCheckBusy} targetCheck={targetCheckResult} authStatus={authStatus} authMode={authModeDraft} setAuthMode={setAuthModeDraft} header={headerDraft} setHeader={setHeaderDraft} token={tokenDraft} setToken={setTokenDraft} showToken={showToken} setShowToken={setShowToken} authError={authError} clearError={() => setAuthError("")} saveAuth={saveAuth} clearAuth={clearAuth} mutations={allowMutations} setMutations={(value) => { setAllowMutations(value); setMcpConfig(""); setMcpTestResult(null); setMcpTestError(""); setToast(value ? "State-changing requests enabled" : "State-changing requests disabled"); }} />}
         </main>
       </div>
       {toast && <div className="toast" role="status"><CheckCircle2 size={16} />{toast}</div>}
@@ -533,9 +785,10 @@ function App() {
   );
 }
 
-function ImportPage({ model, specText, setSpecText, error, busy, onFile, onImport, onDemo }: { model: ApiModel | null; specText: string; setSpecText: (value: string) => void; error: string; busy: boolean; onFile: (file?: File) => void; onImport: () => void; onDemo: () => void }) {
+function ImportPage({ model, specText, setSpecText, error, busy, contracts, activeContractId, contractName, setContractName, selectContract, renameContract, removeContract, onFile, onImport, onDemo }: { model: ApiModel | null; specText: string; setSpecText: (value: string) => void; error: string; busy: boolean; contracts: SavedContract[]; activeContractId: string; contractName: string; setContractName: (value: string) => void; selectContract: (id: string) => void; renameContract: () => void; removeContract: () => void; onFile: (file?: File) => void; onImport: () => void; onDemo: () => void }) {
   return <section className="page import-page">
     <PageHeading subtitle="Load an OpenAPI contract to explore endpoints and verify observed behavior." />
+    {(contracts.length > 0 || model) && <div className="surface contract-library"><div><strong>Saved APIs</strong><small>Contracts are saved in this browser and restored on reload.</small></div><select aria-label="Select saved API" value={activeContractId} onChange={(event) => selectContract(event.target.value)}><option value="">Choose a saved API</option>{contracts.map((contract) => <option key={contract.id} value={contract.id}>{contract.name}</option>)}</select><input aria-label="Saved API name" value={contractName} onChange={(event) => setContractName(event.target.value)} placeholder="API name" /><button className="button button-secondary" onClick={renameContract} disabled={!activeContractId || !contractName.trim()}>Rename</button><button className="button button-quiet danger-text" onClick={removeContract} disabled={!activeContractId}>Remove saved API</button></div>}
     <div className="import-grid">
       <div className="surface import-surface">
         <div className="surface-heading"><div className="heading-icon"><FileJson2 size={17} /></div><div><h2>OpenAPI document</h2><p>JSON or YAML · OpenAPI 3.x</p></div><label className="button button-secondary file-button"><FileUp size={15} />Choose file<input type="file" accept=".json,.yaml,.yml,application/json,text/yaml" onChange={(event) => onFile(event.target.files?.[0])} /></label></div>
@@ -551,7 +804,8 @@ function ImportPage({ model, specText, setSpecText, error, busy, onFile, onImpor
 }
 
 function SettingsPage(props: {
-  target: string; setTarget: (value: string) => void; saveTarget: () => void;
+  target: string; setTarget: (value: string) => void; saveTarget: () => void; checkTarget: () => void; checkingTarget: boolean;
+  targetCheck: { reachable: boolean; status_code: number | null; elapsed_ms: number; message: string } | null;
   authStatus: AuthStatus; authMode: AuthMode; setAuthMode: (value: AuthMode) => void;
   header: string; setHeader: (value: string) => void; token: string; setToken: (value: string) => void;
   showToken: boolean; setShowToken: (value: boolean) => void; authError: string; clearError: () => void;
@@ -563,7 +817,8 @@ function SettingsPage(props: {
       <section className="surface settings-card">
         <div className="settings-card-heading"><span className="settings-icon"><Globe2 size={17} /></span><div><h2>API target</h2><p>Requests and verification runs use this base URL.</p></div></div>
         <label className="field-label" htmlFor="settings-target">BASE URL</label>
-        <div className="target-editor"><input id="settings-target" value={props.target} onChange={(event) => props.setTarget(event.target.value)} placeholder="http://127.0.0.1:8002" onKeyDown={(event) => { if (event.key === "Enter") props.saveTarget(); }} /><button className="button button-primary" onClick={props.saveTarget}>Save target</button></div>
+        <div className="target-editor"><input id="settings-target" value={props.target} onChange={(event) => props.setTarget(event.target.value)} placeholder="http://127.0.0.1:8002" onKeyDown={(event) => { if (event.key === "Enter") props.saveTarget(); }} /><button className="button button-secondary" onClick={props.checkTarget} disabled={props.checkingTarget}>{props.checkingTarget ? <LoaderCircle size={14} className="spin" /> : <Activity size={14} />}Check connection</button><button className="button button-primary" onClick={props.saveTarget}>Save target</button></div>
+        {props.targetCheck && <div className={`target-check-result ${props.targetCheck.reachable ? "reachable" : "unreachable"}`} role="status"><span>{props.targetCheck.reachable ? `Responded with HTTP ${props.targetCheck.status_code} in ${props.targetCheck.elapsed_ms} ms` : "Could not connect"}</span><small>{props.targetCheck.message}</small></div>}
         <div className="settings-card-foot"><span className={props.target.trim() ? "configured-dot" : "missing-dot"} />{props.target.trim() ? "Target configured" : "No target configured"}</div>
       </section>
 
@@ -591,15 +846,17 @@ function ExplorerPage(props: {
   setParameters: (value: (current: Record<string, string>) => Record<string, string>) => void; body: string; setBody: (value: string) => void;
   requestTab: RequestTab; setRequestTab: (value: RequestTab) => void; responseTab: ResponseTab; setResponseTab: (value: ResponseTab) => void;
   response: ResponsePayload | null; requestError: string; requestBusy: boolean; send: () => void; mutations: boolean;
-  authStatus: AuthStatus; openAuth: () => void; openMcp: () => void; copy: (value: string, message: string) => void;
+  authStatus: AuthStatus; openAuth: () => void; openSettings: () => void; openMcp: () => void; copy: (value: string, message: string) => void;
 }) {
   const operation = props.selectedOperation;
   const requestParameters = operation?.parameters.filter((parameter) => ["path", "query"].includes(parameter.in)) ?? [];
   const headerParameters = operation?.parameters.filter((parameter) => parameter.in === "header") ?? [];
   const isMutation = !!operation && operation.method !== "GET";
+  const requestDraft = buildRequestDraft(operation, props.target, props.parameters, props.body);
   return <section className={`page explorer-page ${props.collapsed ? "endpoints-collapsed" : ""}`}>
     <PageHeading subtitle="Select an operation, configure its request, and inspect the response." action={<button className="button button-secondary" onClick={props.openMcp}><Braces size={15} />MCP ready <ChevronRight size={14} /></button>} />
     {props.model && <div className="workspace-state-strip"><span><small>API</small><strong>{props.model.title} v{props.model.version}</strong></span><span><small>TARGET</small><strong className="mono">{props.target || "Not configured"}</strong></span><span><small>AUTH</small><strong className={`auth-text auth-${props.authStatus}`}>{props.authStatus === "set" ? "Set" : props.authStatus === "invalid" ? "Invalid" : "Missing"}</strong></span><span><small>WRITES</small><strong className={props.mutations ? "fail-text" : "pass-text"}>{props.mutations ? "Enabled" : "Off"}</strong></span></div>}
+    {props.model && (!props.target || (props.model.operations.some((item) => item.security.length > 0) && props.authStatus !== "set")) && <div className="workspace-readiness"><AlertTriangle size={15} /><div><strong>Finish session setup</strong><span>{!props.target ? "Set an explicit target before sending requests or running checks." : "This API has secured operations. Add credentials to avoid authentication-related inconclusive results."}</span></div><button className="button button-secondary" onClick={() => !props.target ? props.openSettings() : props.openAuth()}>{!props.target ? "Set target" : "Set authentication"}<ArrowRight size={13} /></button></div>}
     {!props.model ? <EmptyState title="Import an API contract to begin" action="Go to import" /> : <div className="explorer-layout">
       <aside className="endpoint-browser surface">
         <div className="browser-heading"><div><div className="eyebrow">ENDPOINTS</div><strong>{props.model.title}</strong><span>v{props.model.version} · {props.model.operations.length} operations</span></div><button className="icon-button" onClick={() => props.setCollapsed(true)} aria-label="Collapse endpoint list"><PanelLeftClose size={15} /></button></div>
@@ -611,8 +868,9 @@ function ExplorerPage(props: {
           <div className="operation-summary surface"><div className="operation-title"><MethodBadge method={operation.method} /><h2>{operation.path}</h2><button className="icon-button" onClick={() => props.copy(operation.path, "Path copied")} aria-label="Copy endpoint path"><Copy size={14} /></button></div>{operation.summary && <p>{operation.summary}</p>}</div>
           <div className="workbench-grid">
             <section className="surface request-card">
-              <div className="card-title-row"><div><span className="step-number">01</span><h3>Request</h3></div><button className="button button-secondary send-button" onClick={props.send} disabled={props.requestBusy || (isMutation && !props.mutations)}>{props.requestBusy ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}Send request</button></div>
+              <div className="card-title-row"><div><span className="step-number">01</span><h3>Request</h3></div><button className="button button-secondary send-button" onClick={props.send} disabled={props.requestBusy || !!requestDraft.error || (isMutation && !props.mutations)} title={requestDraft.error || undefined}>{props.requestBusy ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}Send request</button></div>
               <div className="request-tabs">{(["Params", "Body", "Auth", "Headers"] as RequestTab[]).map((tab) => <button key={tab} className={props.requestTab === tab ? "active" : ""} onClick={() => props.setRequestTab(tab)}>{tab}{tab === "Params" && requestParameters.length > 0 && <span>{requestParameters.length}</span>}{tab === "Headers" && headerParameters.length > 0 && <span>{headerParameters.length}</span>}</button>)}</div>
+              <details className="request-preview"><summary><span>Request preview</span><small>{requestDraft.error ? "Needs attention" : "Ready to send"}</small><ChevronDown size={13} /></summary><div className="request-preview-body">{requestDraft.error && <InlineMessage tone="warning">{requestDraft.error}</InlineMessage>}<div><span>{operation.method}</span><code>{requestDraft.url || "Enter required values to build the request URL"}</code></div>{operation.request_schema && <pre>{props.body.trim() || "No body provided"}</pre>}<small>{props.authStatus === "set" ? "Session credential will be attached if this operation requires authentication." : "No session credential will be attached."}</small></div></details>
               {props.requestTab === "Params" && <div className="tab-content parameter-grid">{requestParameters.length ? requestParameters.map((parameter) => <ParameterInput key={`${parameter.in}:${parameter.name}`} parameter={parameter} value={props.parameters[parameter.name] ?? ""} onChange={(value) => props.setParameters((current) => ({ ...current, [parameter.name]: value }))} />) : <EmptyInline>No path or query parameters for this endpoint.</EmptyInline>}</div>}
               {props.requestTab === "Body" && <div className="tab-content">{operation.request_schema ? <><div className="body-hint">application/json {operation.request_required ? "· required" : "· optional"}</div><textarea className="body-editor" value={props.body} onChange={(event) => props.setBody(event.target.value)} spellCheck={false} /></> : <EmptyInline>This operation does not define a request body.</EmptyInline>}</div>}
               {props.requestTab === "Auth" && <div className="tab-content auth-info"><div className={`auth-state auth-${props.authStatus}`}><KeyRound size={16} /><div><strong>Session auth: {props.authStatus}</strong><span>Credential is managed in Settings.</span></div><button className="button button-secondary" onClick={props.openAuth}>Open settings</button></div><p>OpenAPI security: {operation.security.length ? operation.security.join(", ") : "No security requirement for this operation"}</p></div>}
@@ -637,7 +895,7 @@ function ExplorerPage(props: {
 }
 
 function RunsPage(props: {
-  model: ApiModel | null; target: string; authStatus: AuthStatus; authMode: AuthMode; openSettings: (type?: "target" | "auth") => void;
+  model: ApiModel | null; reportModel: ApiModel | null; target: string; authStatus: AuthStatus; authMode: AuthMode; openSettings: (type?: "target" | "auth") => void;
   roles: string; setRoles: (value: string) => void; runBusy: boolean; runError: string; run: () => void;
   fixtures: string; setFixtures: (value: string) => void; discoverFixtures: boolean; setDiscoverFixtures: (value: boolean) => void;
   fixturesOpen: boolean; setFixturesOpen: (value: boolean) => void;
@@ -650,13 +908,16 @@ function RunsPage(props: {
   activeCluster: string | null; setActiveCluster: (value: string | null) => void; findings: Finding[]; selectedId: string;
   setSelectedId: (value: string) => void; selectedFinding: Finding | null; rowRefs: React.MutableRefObject<Record<string, HTMLElement | null>>;
   copy: (value: string, message: string) => void;
+  presets: RunPreset[]; presetId: string; setPresetId: (value: string) => void; presetName: string; setPresetName: (value: string) => void;
+  savePreset: () => void; loadPreset: (id?: string) => void; deletePreset: () => void;
+  history: RecentRun[]; previousRunId: string; setPreviousRunId: (value: string) => void; previousReport: RunReport | null;
 }) {
   const model = props.model;
   const [scopeQuery, setScopeQuery] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [runsView, setRunsView] = useState<"configuration" | "results">(props.report ? "results" : "configuration");
   useEffect(() => { if (props.report) setRunsView("results"); }, [props.report?.run_id]);
-  const operations = useMemo(() => new Map((model?.operations ?? []).map((operation) => [operation.id, operation])), [model]);
+  const operations = useMemo(() => new Map(((runsView === "results" ? props.reportModel : null) ?? model)?.operations.map((operation) => [operation.id, operation]) ?? []), [model, props.reportModel, runsView]);
   const scopeGroups = useMemo(() => {
     const grouped = new Map<string, Operation[]>();
     for (const operation of model?.operations ?? []) {
@@ -696,6 +957,37 @@ function RunsPage(props: {
   const startedAt = props.report ? new Date(props.report.started_at).toLocaleString() : "";
   const inconclusiveReasons = [...new Set((props.report?.findings ?? []).filter((finding) => finding.status === "inconclusive").map((finding) => finding.observed || "The check could not reach a conclusion."))]
     .map((reason) => ({ reason, count: (props.report?.findings ?? []).filter((finding) => finding.status === "inconclusive" && (finding.observed || "The check could not reach a conclusion.") === reason).length }));
+  const comparison = useMemo(() => {
+    if (!props.report || !props.previousReport) return null;
+    const key = (finding: Finding) => JSON.stringify([finding.check, finding.operation_id ?? "", finding.expected, finding.variant ?? ""]);
+    const before = new Map(props.previousReport.findings.map((finding) => [key(finding), finding]));
+    const sameOperationScope = JSON.stringify([...(props.previousReport.config?.operation_ids as string[] ?? [])].sort()) === JSON.stringify([...(props.report.config?.operation_ids as string[] ?? [])].sort());
+    const previousFingerprint = props.previousReport.config?.contract_fingerprint;
+    const currentFingerprint = props.report.config?.contract_fingerprint;
+    const sameContract = previousFingerprint === undefined && currentFingerprint === undefined ? true : previousFingerprint === currentFingerprint;
+    const sameScope = sameOperationScope && sameContract;
+    const newFailures: Finding[] = [];
+    const fixedFailures: Finding[] = [];
+    const unchangedFailures: Finding[] = [];
+    for (const finding of props.report.findings) {
+      const previous = before.get(key(finding));
+      if (finding.status === "fail") {
+        if (previous?.status === "fail") unchangedFailures.push(finding);
+        else if (previous || sameScope) newFailures.push(finding);
+      } else if (previous?.status === "fail") fixedFailures.push(finding);
+    }
+    return { newFailures, fixedFailures, unchangedFailures, sameScope };
+  }, [props.report, props.previousReport]);
+  function shareFilteredView() {
+    if (!props.report) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("run", props.report.run_id);
+    url.searchParams.set("status", props.statusFilter);
+    if (props.checkFilter === "all") url.searchParams.delete("check"); else url.searchParams.set("check", props.checkFilter);
+    if (props.search.trim()) url.searchParams.set("q", props.search.trim()); else url.searchParams.delete("q");
+    if (props.activeCluster) url.searchParams.set("cluster", props.activeCluster); else url.searchParams.delete("cluster");
+    void props.copy(url.toString(), "Filtered findings link copied");
+  }
   return <section className="page runs-page">
     <div className="runs-page-heading">
       {runsView === "configuration" || !props.report ? <p>Run the whole contract, or pick the groups you changed.</p> : <div className="runs-heading-result"><div className="runs-meta"><span>Run <b>{props.report.run_id.slice(0, 10)}</b></span><span>Target <b>{props.report.base_url}</b></span><span>Started <b>{startedAt}</b></span><span>Scope <b>{props.summary?.operation_count ?? 0} operations</b></span></div><div className="run-result-actions"><button className="button button-secondary" onClick={() => setRunsView("configuration")}>Edit scope</button><a className="button button-secondary" href={`${API}/runs/${props.report.run_id}/report.html`} target="_blank" rel="noreferrer"><ArrowDownToLine size={14} />HTML report</a></div></div>}
@@ -714,6 +1006,7 @@ function RunsPage(props: {
         <button className="button button-quiet run-session-settings" onClick={() => props.openSettings()}>Change in Settings</button>
       </div>
       {(!props.target || (model.operations.some((operation) => operation.security.length > 0) && props.authStatus !== "set")) && <div className="run-readiness"><AlertTriangle size={15} /><span>{!props.target ? "Choose a target before running checks." : "This contract has secured operations, but no session credential is set. Auth checks may be inconclusive."}</span><button className="link-button" onClick={() => props.openSettings(props.target ? "auth" : "target")}>{!props.target ? "Set target" : "Review auth"}<ArrowRight size={13} /></button></div>}
+      <div className="surface run-presets"><div><strong>Saved run configurations</strong><small>Store coverage, fixtures, and roles. Credentials are never saved.</small></div><select aria-label="Saved run configurations" value={props.presetId} onChange={(event) => { const id = event.target.value; props.setPresetId(id); props.setPresetName(props.presets.find((item) => item.id === id)?.name ?? ""); }}><option value="">Choose a saved configuration</option>{props.presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}</select><input value={props.presetName} onChange={(event) => props.setPresetName(event.target.value)} placeholder="Name this configuration" aria-label="Run configuration name" /><button className="button button-secondary" onClick={() => props.loadPreset()} disabled={!props.presetId}>Load</button><button className="button button-secondary" onClick={props.savePreset}>{props.presetId ? "Update" : "Save"}</button>{props.presetId && <button className="button button-quiet danger-text" onClick={props.deletePreset}>Remove</button>}</div>
       <div className="run-config surface">
         <section className="run-scope">
           <div className="run-scope-heading"><div><strong>What to check</strong><span>Run the whole contract, or pick the groups you changed.</span></div><div className="scope-mode segmented"><button aria-pressed={props.scopeMode === "all"} className={props.scopeMode === "all" ? "active" : ""} onClick={() => props.setScopeMode("all")}>Entire API <span>{model.operations.length}</span></button><button aria-pressed={props.scopeMode === "groups"} className={props.scopeMode === "groups" ? "active" : ""} onClick={() => props.setScopeMode("groups")}>Choose groups</button></div></div>
@@ -726,7 +1019,7 @@ function RunsPage(props: {
           </section>
         <details className="advanced-run-config" open={advancedOpen} onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}><summary><span>Advanced configuration <small>Fixtures and roles. Optional.</small></span><ChevronDown size={14} /></summary><div className="run-advanced-grid">
         <details id="fixtures-editor" className="run-options fixtures-options" open={props.fixturesOpen} onToggle={(event) => props.setFixturesOpen(event.currentTarget.open)}><summary><span>Path fixtures</span><small>Optional · replace generated path values with known resources</small></summary><label className="field-label" htmlFor="fixtures-json">PATH PARAMETER VALUES</label><textarea id="fixtures-json" className="roles-editor" value={props.fixtures} onChange={(event) => props.setFixtures(event.target.value)} placeholder={'{"id":"1","slug":"rose"}'} /><label className="discovery-toggle"><input type="checkbox" checked={props.discoverFixtures} onChange={(event) => props.setDiscoverFixtures(event.target.checked)} /><span><strong>Discover IDs from list responses</strong><small>Use the first item returned by a matching GET list operation. Off by default.</small></span></label></details>
-        <details className="run-options"><summary><span>Role configurations</span><small>Optional · test operations with multiple access levels</small></summary><label className="field-label" htmlFor="role-config">CONFIGURATION JSON</label><textarea id="role-config" className="roles-editor" value={props.roles} onChange={(event) => props.setRoles(event.target.value)} placeholder={'[{"name":"viewer","token":"...","allowed_operation_ids":["list_items"]}]'} /><p>Provide role credentials and the operation IDs each role can access.</p></details>
+        <details className="run-options"><summary><span>Role configurations</span><small>Optional · test operations with multiple access levels</small></summary><label className="field-label" htmlFor="role-config">CONFIGURATION JSON</label><textarea id="role-config" className="roles-editor" value={props.roles} onChange={(event) => props.setRoles(event.target.value)} placeholder={'[{"name":"viewer","token":"...","allowed_operation_ids":["list_items"]}]'} /><p>Provide role credentials and the operation IDs each role can access. Saved run configurations clear token fields, so enter role tokens again after loading.</p></details>
         <details className="contract-structure"><summary><span>Document schemas and relationships</span><small>{schemas.length} named schemas</small><ChevronDown size={14} /></summary>{schemas.length ? <div className="schema-table-wrap"><table className="schema-table"><thead><tr><th>SCHEMA</th><th>FIELDS</th><th>RELATIONSHIPS</th></tr></thead><tbody>{schemas.map(([name, schema]) => { const properties = schema.properties && typeof schema.properties === "object" ? Object.keys(schema.properties as Record<string, unknown>) : []; const relations = schemaRelations(schema); return <tr key={name}><th>{name}</th><td>{properties.length ? properties.map((field) => <code key={field}>{field}</code>) : <span className="muted">No named fields</span>}</td><td>{relations.length ? relations.map((relation) => <code key={relation}>{relation}</code>) : <span className="muted">No direct references</span>}</td></tr>; })}</tbody></table></div> : <p className="schema-empty">This document has no named component schemas to map.</p>}</details>
         </div></details>
         {props.runError && <InlineMessage tone="error">{props.runError}</InlineMessage>}
@@ -734,6 +1027,7 @@ function RunsPage(props: {
       <div className="run-sticky-actions"><div><strong>{props.scopeMode === "all" ? `${scopeGroups.length} groups, ${model.operations.length} operations` : `${props.selectedGroups.length} groups, ${selectedOperationCount} operations`}</strong><span>{props.scopeMode === "all" ? "Entire API" : selectedOperationCount ? `Read-only checks against ${props.target || "No target configured"}` : "Choose at least one group to run."}</span></div><button className="button button-primary" onClick={props.run} disabled={props.runBusy || !props.target || (props.scopeMode === "groups" && !props.selectedGroups.length)}>{props.runBusy ? <LoaderCircle size={14} className="spin" /> : <Play size={14} />}{props.runBusy ? "Running checks" : "Run checks"}<ArrowRight size={14} /></button></div>
       </div>}
       {runsView === "results" && props.report && props.summary && <>
+        <div className="run-history-toolbar"><label>Compare with<select value={props.previousRunId} onChange={(event) => props.setPreviousRunId(event.target.value)}><option value="">No comparison</option>{props.history.filter((item) => item.status === "completed" && item.run_id !== props.report?.run_id).map((item) => <option key={item.run_id} value={item.run_id}>{new Date(item.started_at).toLocaleString()} · {item.run_id.slice(0, 8)}</option>)}</select></label><button className="button button-secondary" onClick={shareFilteredView}><Copy size={14} />Copy filtered view link</button></div>
         <section className="run-overview">
           <div className="surface run-summary-card">
             <h2 className="run-verdict">{props.summary.verdict}</h2>
@@ -751,6 +1045,7 @@ function RunsPage(props: {
             <section className="surface run-result-panel run-by-check"><h2>By check</h2><p className="lead">Results for each type of check.</p><div className="run-check-list">{checkResults.length ? checkResults.map((item) => { const total = item.fail + item.inconclusive + item.pass; return <div className="run-check-item" key={item.check}><span>{item.check}</span><div className="run-check-bar">{item.fail > 0 && <i className="fail" style={{ flex: item.fail }} />}{item.inconclusive > 0 && <i className="inconclusive" style={{ flex: item.inconclusive }} />}{item.pass > 0 && <i className="pass" style={{ flex: item.pass }} />}</div><b>{item.fail} failed</b><small>{total} results</small></div>; }) : <p className="run-empty-state">No checks in this run.</p>}</div></section>
           </div>
         </section>
+        {comparison && <section className="surface run-comparison"><div className="run-comparison-heading"><div><h2>Compared with previous run</h2><p>{props.previousReport?.run_id.slice(0, 10)} · {new Date(props.previousReport!.started_at).toLocaleString()}</p></div>{!comparison.sameScope && <span className="compare-scope-note">Coverage changed. New failures without a matching earlier finding are omitted.</span>}</div><div className="comparison-kpis"><div><strong>{comparison.newFailures.length}</strong><span>New failures</span></div><div><strong>{comparison.fixedFailures.length}</strong><span>Fixed</span></div><div><strong>{comparison.unchangedFailures.length}</strong><span>Unchanged failures</span></div></div><div className="comparison-lists">{([['New failures', comparison.newFailures], ['Fixed', comparison.fixedFailures], ['Unchanged failures', comparison.unchangedFailures]] as [string, Finding[]][]).map(([label, findings]) => <div key={label}><h3>{label}</h3>{findings.length ? <ul>{findings.slice(0, 6).map((finding) => <li key={finding.id}><code>{finding.operation_id ?? "API"}</code><span>{finding.check} · {finding.observed}</span></li>)}</ul> : <p>None</p>}</div>)}</div></section>}
         <section className="triage-section surface" id="runs-findings">
           <div className="triage-heading"><div><h2>Findings</h2><p>Select a row to see the evidence.</p></div><div className="keyboard-hint"><kbd>j</kbd><kbd>k</kbd> move <kbd>/</kbd> search</div></div>
           <div className="triage-filters"><div className="segmented">{(["all", "fail", "inconclusive", "pass"] as const).map((status) => <button key={status} aria-pressed={props.statusFilter === status} className={props.statusFilter === status ? "active" : ""} onClick={() => { props.setStatusFilter(status); props.setActiveCluster(null); }}>{status === "all" ? "All" : statusLabel(status)}<span>{status === "all" ? props.report?.findings.length ?? 0 : counts[status] ?? 0}</span></button>)}</div><label className="search-control finding-search"><Search size={14} /><input ref={props.searchRef} value={props.search} onChange={(event) => props.setSearch(event.target.value)} placeholder="Search operation or path" /><kbd>/</kbd></label><select value={props.checkFilter} onChange={(event) => props.setCheckFilter(event.target.value)} aria-label="Filter by check"><option value="all">All checks</option>{checks.map((check) => <option key={check}>{check}</option>)}</select><select value={props.groupBy} onChange={(event) => props.setGroupBy(event.target.value as typeof props.groupBy)} aria-label="Group findings"><option value="none">No grouping</option><option value="check">Group by check</option><option value="endpoint">Group by endpoint</option><option value="cluster">Group by cluster</option></select>{props.activeCluster && <button className="button button-quiet clear-cluster" onClick={() => props.setActiveCluster(null)}><X size={13} />Clear cluster</button>}</div>
@@ -766,17 +1061,18 @@ function RunsPage(props: {
   </section>;
 }
 
-function McpPage({ model, target, tokenSet, mutations, config, error, busy, generate, copy }: {
+function McpPage({ model, target, tokenSet, mutations, config, error, busy, generate, copy, test, testBusy, testError, testResult }: {
   model: ApiModel | null; target: string; tokenSet: boolean; mutations: boolean;
   config: string;
   error: string; busy: boolean; generate: () => void; copy: (value: string, message: string) => void;
+  test: () => void; testBusy: boolean; testError: string; testResult: McpTestResult | null;
 }) {
   const mutationMethods = new Set(["POST", "PUT", "PATCH", "DELETE"]);
   const mutationToolCount = model?.operations.filter((operation) => mutationMethods.has(operation.method.toUpperCase())).length ?? 0;
   const readOnly = (model?.operations.length ?? 0) - mutationToolCount;
   return <section className="page mcp-page"><PageHeading subtitle="Connect any MCP-compatible agent to explore and call this API's tools." />
     <div className="surface mcp-intro"><div className="heading-icon"><Braces size={17} /></div><div><strong>One MCP server, many clients</strong><p>Any agent that supports MCP can discover and call Plumbline tools against your selected API target. Add the server command in that agent's MCP settings; each client may use a different config-file format.</p></div><div className="mcp-target"><span>SESSION TARGET</span><code>{target || "Not set"}</code></div></div>
-    {!model ? <EmptyState title="Import an API to generate MCP tools" action="Go to import" /> : <div className="mcp-layout"><div className="surface mcp-config-card"><div className="section-heading"><div><div className="eyebrow">MCP SERVER</div><h2>Connect an MCP-enabled agent</h2></div><span className="ready-indicator"><span />API loaded</span></div><div className="path-note">This stdio server entry includes the imported API model and selected target. Use it as a starting point for Claude Desktop, Cursor, or another MCP-compatible agent.</div><div className="mcp-tool-counts"><div><span>READ ONLY</span><strong>{readOnly}</strong><small>GET tools</small></div><div><span>STATE CHANGING</span><strong>{mutationToolCount}</strong><small>POST / PUT / PATCH / DELETE</small></div></div><div className="mcp-token-note"><KeyRound size={15} /><span>{tokenSet ? "The config references PLUMBLINE_TOKEN from the client environment. The token itself is never included." : "No session token set. The MCP server will connect without configured auth."}</span></div>{error && <InlineMessage tone="error">{error}</InlineMessage>}<div className="mcp-actions"><button className="button button-primary" onClick={generate} disabled={busy}>{busy ? <LoaderCircle size={14} className="spin" /> : <Braces size={14} />}Generate MCP server config</button><button className="button button-secondary" disabled title="Requires local MCP process support."><Activity size={14} />Test connection</button></div></div>
+    {!model ? <EmptyState title="Import an API to generate MCP tools" action="Go to import" /> : <div className="mcp-layout"><div className="surface mcp-config-card"><div className="section-heading"><div><div className="eyebrow">MCP SERVER</div><h2>Connect an MCP-enabled agent</h2></div><span className="ready-indicator"><span />API loaded</span></div><div className="path-note">This stdio server entry includes the imported API model and selected target. Use it as a starting point for Claude Desktop, Cursor, or another MCP-compatible agent.</div><div className="mcp-tool-counts"><div><span>READ ONLY</span><strong>{readOnly}</strong><small>GET tools</small></div><div><span>STATE CHANGING</span><strong>{mutationToolCount}</strong><small>POST / PUT / PATCH / DELETE</small></div></div><div className="mcp-token-note"><KeyRound size={15} /><span>{tokenSet ? "The config references PLUMBLINE_TOKEN from the client environment. The token itself is never included." : "No session token set. The MCP server will connect without configured auth."}</span></div>{error && <InlineMessage tone="error">{error}</InlineMessage>}{testError && <InlineMessage tone="error">{testError}</InlineMessage>}<div className="mcp-actions"><button className="button button-primary" onClick={generate} disabled={busy}>{busy ? <LoaderCircle size={14} className="spin" /> : <Braces size={14} />}Generate MCP server config</button><button className="button button-secondary" onClick={test} disabled={testBusy || !target}>{testBusy ? <LoaderCircle size={14} className="spin" /> : <Activity size={14} />}Test connection</button></div>{testResult && <section className="mcp-test-result" role="status"><div><strong>MCP server started successfully</strong><span>{testResult.tool_count} tools · {testResult.read_only_count} read-only · {testResult.mutation_count} state-changing</span></div><details><summary>Show discovered tools</summary><ul>{testResult.tools.map((tool) => <li key={tool.name}><code>{tool.name}</code><span>{tool.description}</span></li>)}</ul></details></section>}</div>
       <div className="surface generated-config"><div className="section-heading"><div><div className="eyebrow">SERVER CONFIG</div><h2>{config ? "Ready to copy" : "Configuration preview"}</h2></div>{config && <button className="icon-button" onClick={() => copy(config, "Config copied")} aria-label="Copy MCP configuration"><Copy size={15} /></button>}</div>{config ? <pre>{config}</pre> : <div className="config-placeholder"><Braces size={24} /><strong>Config appears here</strong><span>Generate the stdio server entry for your MCP settings.</span></div>}<div className={`readonly-note ${mutations ? "mutations-enabled" : ""}`}><ShieldCheck size={14} />{mutations ? "State-changing tools are enabled in this config." : "State-changing tools are blocked by default by the MCP server."}</div></div></div>}
   </section>;
 }
