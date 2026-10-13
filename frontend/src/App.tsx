@@ -31,6 +31,16 @@ type RunSummary = {
 };
 type AuthMode = "bearer" | "apikey";
 type Page = "import" | "explorer" | "runs" | "mcp" | "settings";
+type StoredContractSource = { kind: "spec" | "url"; value: string };
+
+function storedContractSource(): StoredContractSource | null {
+  try {
+    const value = localStorage.getItem("plumbline-contract-source");
+    if (!value) return null;
+    const parsed = JSON.parse(value) as StoredContractSource;
+    return (parsed.kind === "spec" || parsed.kind === "url") && parsed.value ? parsed : null;
+  } catch { return null; }
+}
 type AuthStatus = "missing" | "set" | "invalid";
 type ResponsePayload = { status: number; url: string; headers: Record<string, string>; body: unknown; elapsed_ms: number };
 type RequestTab = "Params" | "Body" | "Auth" | "Headers";
@@ -130,7 +140,10 @@ function statusLabel(status: string): string {
 function App() {
   const [page, setPage] = useState<Page>("import");
   const [model, setModel] = useState<ApiModel | null>(null);
-  const [specText, setSpecText] = useState("");
+  const [specText, setSpecText] = useState(() => {
+    const source = storedContractSource();
+    return source?.kind === "spec" ? source.value : "";
+  });
   const [importError, setImportError] = useState("");
   const [importBusy, setImportBusy] = useState(false);
   const [baseUrl, setBaseUrl] = useState(() => localStorage.getItem("plumbline-target") ?? "");
@@ -182,7 +195,7 @@ function App() {
   const [mcpError, setMcpError] = useState("");
   const [mcpBusy, setMcpBusy] = useState(false);
   const findingSearchRef = useRef<HTMLInputElement>(null);
-  const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
+  const rowRefs = useRef<Record<string, HTMLElement | null>>({});
 
   const selectedOperation = model?.operations.find((operation) => operation.id === selectedOperationId) ?? null;
 
@@ -239,12 +252,19 @@ function App() {
   useEffect(() => { localStorage.setItem("plumbline-last-run-status", lastRunStatus); }, [lastRunStatus]);
   useEffect(() => {
     let active = true;
-    void apiRequest<ApiModel>(`${API}/model`).then((loaded) => {
+    const source = storedContractSource();
+    const restore = source
+      ? apiRequest<ApiModel>(`${API}/import`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(source.kind === "url" ? { url: source.value } : { spec: source.value }) })
+      : apiRequest<ApiModel>(`${API}/model`);
+    void restore.then((loaded) => {
       if (!active) return;
       setModel(loaded);
       setSelectedOperationId(loaded.operations[0]?.id ?? "");
       setPage("explorer");
-    }).catch(() => undefined);
+    }).catch((error) => {
+      if (!active || !source) return;
+      setImportError(`Could not restore the saved API contract: ${error instanceof Error ? error.message : "backend unavailable"}`);
+    });
     const savedRunId = localStorage.getItem("plumbline-last-run-id");
     if (savedRunId) {
       void Promise.all([
@@ -343,12 +363,17 @@ function App() {
     setToast("Target updated");
   }
 
+  function saveContractSource(source: StoredContractSource) {
+    try { localStorage.setItem("plumbline-contract-source", JSON.stringify(source)); }
+    catch { setToast("Contract loaded, but browser storage is full"); }
+  }
+
   async function importSpec(text = specText) {
     if (!text.trim()) { setImportError("Choose a file or paste an OpenAPI document first."); return; }
     setImportBusy(true); setImportError("");
     try {
       const imported = await apiRequest<ApiModel>(`${API}/import`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ spec: text }) });
-      setModel(imported); setSelectedOperationId(imported.operations[0]?.id ?? ""); setRunScopeMode("all"); setSelectedRunGroups([]); setPage("explorer"); setLastRunStatus("none"); localStorage.removeItem("plumbline-last-run-id"); setReport(null); setRunSummary(null); setToast(`Imported ${imported.operations.length} operations`);
+      saveContractSource({ kind: "spec", value: text }); setSpecText(text); setModel(imported); setSelectedOperationId(imported.operations[0]?.id ?? ""); setRunScopeMode("all"); setSelectedRunGroups([]); setPage("explorer"); setLastRunStatus("none"); localStorage.removeItem("plumbline-last-run-id"); setReport(null); setRunSummary(null); setToast(`Imported ${imported.operations.length} operations`);
     } catch (error) { setImportError(error instanceof Error ? error.message : "Could not import the contract."); }
     finally { setImportBusy(false); }
   }
@@ -357,7 +382,7 @@ function App() {
     setImportBusy(true); setImportError("");
     try {
       const imported = await apiRequest<ApiModel>(`${API}/import`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: DEMO_SPEC_URL }) });
-      setModel(imported); setSelectedOperationId(imported.operations[0]?.id ?? ""); setRunScopeMode("all"); setSelectedRunGroups([]); setPage("explorer"); setLastRunStatus("none"); localStorage.removeItem("plumbline-last-run-id"); setReport(null); setRunSummary(null); setToast("Demo contract loaded");
+      saveContractSource({ kind: "url", value: DEMO_SPEC_URL }); setSpecText(""); setModel(imported); setSelectedOperationId(imported.operations[0]?.id ?? ""); setRunScopeMode("all"); setSelectedRunGroups([]); setPage("explorer"); setLastRunStatus("none"); localStorage.removeItem("plumbline-last-run-id"); setReport(null); setRunSummary(null); setToast("Demo contract loaded");
     } catch (error) { setImportError(error instanceof Error ? error.message : "Could not load the demo contract."); }
     finally { setImportBusy(false); }
   }
@@ -390,6 +415,7 @@ function App() {
       setResponsePayload({ ...result, elapsed_ms: elapsed });
       if (token && result.status === 401 || token && result.status === 403) { setAuthStatus("invalid"); setToast("Credentials rejected by target"); }
       else if (token && result.status < 400) setAuthStatus("set");
+      else setToast(`Response received · HTTP ${result.status}`);
     } catch (error) { setRequestError(error instanceof Error ? error.message : "The request could not be completed."); }
     finally { setRequestBusy(false); }
   }
@@ -495,11 +521,11 @@ function App() {
         </aside>
 
         <main className="main-content">
-          {page === "import" && <ImportPage specText={specText} setSpecText={setSpecText} error={importError} busy={importBusy} onFile={loadFile} onImport={() => void importSpec()} onDemo={() => void loadDemoContract()} />}
-          {page === "explorer" && <ExplorerPage model={model} selectedOperation={selectedOperation} groups={operationGroups} search={operationSearch} setSearch={setOperationSearch} collapsed={endpointsCollapsed} setCollapsed={setEndpointsCollapsed} selectOperation={setSelectedOperationId} parameters={parameterValues} setParameters={setParameterValues} body={bodyValue} setBody={setBodyValue} requestTab={requestTab} setRequestTab={setRequestTab} responseTab={responseTab} setResponseTab={setResponseTab} response={responsePayload} requestError={requestError} requestBusy={requestBusy} send={sendOperation} mutations={allowMutations} authStatus={authStatus} openAuth={() => openSettings("auth")} openMcp={() => setPage("mcp")} copy={copyText} />}
-          {page === "runs" && <RunsPage model={model} roles={rolesText} setRoles={setRolesText} fixtures={fixturesText} setFixtures={setFixturesText} discoverFixtures={discoverFixtures} setDiscoverFixtures={setDiscoverFixtures} fixturesOpen={fixturesOpen} setFixturesOpen={setFixturesOpen} runBusy={runBusy} runError={runError} run={runChecks} mutations={allowMutations} scopeMode={runScopeMode} setScopeMode={setRunScopeMode} selectedGroups={selectedRunGroups} setSelectedGroups={setSelectedRunGroups} report={report} summary={runSummary} statusFilter={statusFilter} setStatusFilter={setStatusFilter} search={findingSearch} setSearch={setFindingSearch} searchRef={findingSearchRef} checkFilter={checkFilter} setCheckFilter={setCheckFilter} groupBy={groupBy} setGroupBy={setGroupBy} activeCluster={activeCluster} setActiveCluster={setActiveCluster} findings={filteredFindings} selectedId={selectedFindingId} setSelectedId={setSelectedFindingId} selectedFinding={selectedFinding} rowRefs={rowRefs} copy={copyText} />}
+          {page === "import" && <ImportPage model={model} specText={specText} setSpecText={setSpecText} error={importError} busy={importBusy} onFile={loadFile} onImport={() => void importSpec()} onDemo={() => void loadDemoContract()} />}
+          {page === "explorer" && <ExplorerPage model={model} target={baseUrl} selectedOperation={selectedOperation} groups={operationGroups} search={operationSearch} setSearch={setOperationSearch} collapsed={endpointsCollapsed} setCollapsed={setEndpointsCollapsed} selectOperation={setSelectedOperationId} parameters={parameterValues} setParameters={setParameterValues} body={bodyValue} setBody={setBodyValue} requestTab={requestTab} setRequestTab={setRequestTab} responseTab={responseTab} setResponseTab={setResponseTab} response={responsePayload} requestError={requestError} requestBusy={requestBusy} send={sendOperation} mutations={allowMutations} authStatus={authStatus} openAuth={() => openSettings("auth")} openSettings={() => openSettings()} openMcp={() => setPage("mcp")} copy={copyText} />}
+          {page === "runs" && <RunsPage model={model} target={baseUrl} authStatus={authStatus} authMode={authMode} openSettings={() => openSettings()} roles={rolesText} setRoles={setRolesText} fixtures={fixturesText} setFixtures={setFixturesText} discoverFixtures={discoverFixtures} setDiscoverFixtures={setDiscoverFixtures} fixturesOpen={fixturesOpen} setFixturesOpen={setFixturesOpen} runBusy={runBusy} runError={runError} run={runChecks} mutations={allowMutations} scopeMode={runScopeMode} setScopeMode={setRunScopeMode} selectedGroups={selectedRunGroups} setSelectedGroups={setSelectedRunGroups} report={report} summary={runSummary} statusFilter={statusFilter} setStatusFilter={setStatusFilter} search={findingSearch} setSearch={setFindingSearch} searchRef={findingSearchRef} checkFilter={checkFilter} setCheckFilter={setCheckFilter} groupBy={groupBy} setGroupBy={setGroupBy} activeCluster={activeCluster} setActiveCluster={setActiveCluster} findings={filteredFindings} selectedId={selectedFindingId} setSelectedId={setSelectedFindingId} selectedFinding={selectedFinding} rowRefs={rowRefs} copy={copyText} />}
           {page === "mcp" && <McpPage model={model} target={baseUrl} tokenSet={!!token} mutations={allowMutations} config={mcpConfig} error={mcpError} busy={mcpBusy} generate={generateMcpConfig} copy={copyText} />}
-          {page === "settings" && <SettingsPage target={targetDraft} setTarget={setTargetDraft} saveTarget={saveTarget} authStatus={authStatus} authMode={authModeDraft} setAuthMode={setAuthModeDraft} header={headerDraft} setHeader={setHeaderDraft} token={tokenDraft} setToken={setTokenDraft} showToken={showToken} setShowToken={setShowToken} authError={authError} clearError={() => setAuthError("")} saveAuth={saveAuth} clearAuth={clearAuth} mutations={allowMutations} setMutations={(value) => { setAllowMutations(value); setMcpConfig(""); }} />}
+          {page === "settings" && <SettingsPage target={targetDraft} setTarget={setTargetDraft} saveTarget={saveTarget} authStatus={authStatus} authMode={authModeDraft} setAuthMode={setAuthModeDraft} header={headerDraft} setHeader={setHeaderDraft} token={tokenDraft} setToken={setTokenDraft} showToken={showToken} setShowToken={setShowToken} authError={authError} clearError={() => setAuthError("")} saveAuth={saveAuth} clearAuth={clearAuth} mutations={allowMutations} setMutations={(value) => { setAllowMutations(value); setMcpConfig(""); setToast(value ? "State-changing requests enabled" : "State-changing requests disabled"); }} />}
         </main>
       </div>
       {toast && <div className="toast" role="status"><CheckCircle2 size={16} />{toast}</div>}
@@ -507,16 +533,17 @@ function App() {
   );
 }
 
-function ImportPage({ specText, setSpecText, error, busy, onFile, onImport, onDemo }: { specText: string; setSpecText: (value: string) => void; error: string; busy: boolean; onFile: (file?: File) => void; onImport: () => void; onDemo: () => void }) {
+function ImportPage({ model, specText, setSpecText, error, busy, onFile, onImport, onDemo }: { model: ApiModel | null; specText: string; setSpecText: (value: string) => void; error: string; busy: boolean; onFile: (file?: File) => void; onImport: () => void; onDemo: () => void }) {
   return <section className="page import-page">
     <PageHeading subtitle="Load an OpenAPI contract to explore endpoints and verify observed behavior." />
     <div className="import-grid">
       <div className="surface import-surface">
         <div className="surface-heading"><div className="heading-icon"><FileJson2 size={17} /></div><div><h2>OpenAPI document</h2><p>JSON or YAML · OpenAPI 3.x</p></div><label className="button button-secondary file-button"><FileUp size={15} />Choose file<input type="file" accept=".json,.yaml,.yml,application/json,text/yaml" onChange={(event) => onFile(event.target.files?.[0])} /></label></div>
+        {model && <div className="contract-loaded-note"><CheckCircle2 size={14} /><span>Active API: <strong>{model.title}</strong> v{model.version} · {model.operations.length} operations. Importing a valid document replaces this contract.</span></div>}
         <textarea className="spec-editor" value={specText} onChange={(event) => setSpecText(event.target.value)} spellCheck={false} placeholder={'Paste or load your OpenAPI document…\n\nopenapi: 3.0.3\ninfo:\n  title: Example API\n  version: 1.0.0\npaths: {}'} />
         <div className="editor-foot"><span><Braces size={13} />{specText ? `${specText.length.toLocaleString()} characters` : "No document loaded"}</span><span>YAML / JSON</span></div>
         {error && <InlineMessage tone="error">{error}</InlineMessage>}
-        <div className="import-actions"><button className="button button-primary" onClick={onImport} disabled={busy}>{busy ? <LoaderCircle className="spin" size={15} /> : <FileCheck2 size={15} />}{busy ? "Validating" : "Validate and import"}<ArrowRight size={15} /></button><button className="button button-quiet" onClick={onDemo} disabled={busy}><Play size={14} />Load demo</button></div>
+        <div className="import-actions"><button className="button button-primary" onClick={onImport} disabled={busy}>{busy ? <LoaderCircle className="spin" size={15} /> : <FileCheck2 size={15} />}{busy ? "Validating" : model ? "Validate and replace API" : "Validate and import"}<ArrowRight size={15} /></button><button className="button button-quiet" onClick={onDemo} disabled={busy}><Play size={14} />Load demo</button></div>
       </div>
       <aside className="import-aside"><div className="eyebrow">AFTER IMPORT</div><div className="guide-step"><span>01</span><div><strong>Validate the spec</strong><p>Resolve references and check the OpenAPI structure.</p></div><Check size={15} /></div><div className="guide-step"><span>02</span><div><strong>Explore operations</strong><p>Choose a target separately and inspect live responses.</p></div><ArrowRight size={15} /></div><div className="guide-step"><span>03</span><div><strong>Run contract checks</strong><p>Review findings with the request and response evidence.</p></div><ArrowRight size={15} /></div><div className="notice"><CircleAlert size={16} /><span>Plumbline never infers the target URL from the OpenAPI server field.</span></div></aside>
     </div>
@@ -559,12 +586,12 @@ function SettingsPage(props: {
 }
 
 function ExplorerPage(props: {
-  model: ApiModel | null; selectedOperation: Operation | null; groups: [string, Operation[]][]; search: string; setSearch: (value: string) => void;
+  model: ApiModel | null; target: string; selectedOperation: Operation | null; groups: [string, Operation[]][]; search: string; setSearch: (value: string) => void;
   collapsed: boolean; setCollapsed: (value: boolean) => void; selectOperation: (id: string) => void; parameters: Record<string, string>;
   setParameters: (value: (current: Record<string, string>) => Record<string, string>) => void; body: string; setBody: (value: string) => void;
   requestTab: RequestTab; setRequestTab: (value: RequestTab) => void; responseTab: ResponseTab; setResponseTab: (value: ResponseTab) => void;
   response: ResponsePayload | null; requestError: string; requestBusy: boolean; send: () => void; mutations: boolean;
-  authStatus: AuthStatus; openAuth: () => void; openMcp: () => void; copy: (value: string, message: string) => void;
+  authStatus: AuthStatus; openAuth: () => void; openSettings: () => void; openMcp: () => void; copy: (value: string, message: string) => void;
 }) {
   const operation = props.selectedOperation;
   const requestParameters = operation?.parameters.filter((parameter) => ["path", "query"].includes(parameter.in)) ?? [];
@@ -572,6 +599,7 @@ function ExplorerPage(props: {
   const isMutation = !!operation && operation.method !== "GET";
   return <section className={`page explorer-page ${props.collapsed ? "endpoints-collapsed" : ""}`}>
     <PageHeading subtitle="Select an operation, configure its request, and inspect the response." action={<button className="button button-secondary" onClick={props.openMcp}><Braces size={15} />MCP ready <ChevronRight size={14} /></button>} />
+    {props.model && <div className="workspace-state-strip"><span><small>API</small><strong>{props.model.title} v{props.model.version}</strong></span><span><small>TARGET</small><strong className="mono">{props.target || "Not configured"}</strong></span><span><small>AUTH</small><strong className={`auth-text auth-${props.authStatus}`}>{props.authStatus === "set" ? "Set" : props.authStatus === "invalid" ? "Invalid" : "Missing"}</strong></span><span><small>WRITES</small><strong className={props.mutations ? "fail-text" : "pass-text"}>{props.mutations ? "Enabled" : "Off"}</strong></span><button className="link-button" onClick={props.openSettings}>Session settings <ArrowRight size={13} /></button></div>}
     {!props.model ? <EmptyState title="Import an API contract to begin" action="Go to import" /> : <div className="explorer-layout">
       <aside className="endpoint-browser surface">
         <div className="browser-heading"><div><div className="eyebrow">ENDPOINTS</div><strong>{props.model.title}</strong><span>v{props.model.version} · {props.model.operations.length} operations</span></div><button className="icon-button" onClick={() => props.setCollapsed(true)} aria-label="Collapse endpoint list"><PanelLeftClose size={15} /></button></div>
@@ -591,13 +619,13 @@ function ExplorerPage(props: {
               {props.requestTab === "Headers" && <div className="tab-content parameter-grid">{headerParameters.length ? headerParameters.map((parameter) => <ParameterInput key={`${parameter.in}:${parameter.name}`} parameter={parameter} value={props.parameters[parameter.name] ?? ""} onChange={(value) => props.setParameters((current) => ({ ...current, [parameter.name]: value }))} />) : <EmptyInline>No operation-specific headers.</EmptyInline>}</div>}
               {isMutation && !props.mutations && <InlineMessage tone="warning">Mutations are off. Turn them on in Settings to send this request.</InlineMessage>}
               {props.requestError && <InlineMessage tone="error">{props.requestError}</InlineMessage>}
-              <div className="request-foot"><ShieldCheck size={13} />Requests go through the local Plumbline backend.</div>
+              <div className="request-foot"><ShieldCheck size={13} />{props.target ? <>Requests go through Plumbline to <code>{props.target}</code>.</> : <>Set a target before sending. <button className="link-button" onClick={props.openSettings}>Open Settings</button></>}</div>
             </section>
             <section className="surface response-card"><div className="card-title-row"><div><span className="step-number">02</span><h3>Response</h3></div>{props.response && <StatusBadge status={props.response.status < 400 ? "pass" : "fail"} label={`HTTP ${props.response.status}`} />}</div>
               <div className="request-tabs response-tabs">{(["Body", "Headers", "Timing"] as ResponseTab[]).map((tab) => <button key={tab} className={props.responseTab === tab ? "active" : ""} onClick={() => props.setResponseTab(tab)}>{tab}</button>)}</div>
               {props.response ? <>
                 {props.responseTab === "Body" && <><div className="response-url"><code>{props.response.url}</code><button className="icon-button" onClick={() => props.copy(pretty(props.response?.body), "Response copied")} aria-label="Copy response body"><Copy size={14} /></button></div><pre className="response-body">{pretty(props.response.body)}</pre></>}
-                {props.responseTab === "Headers" && <pre className="response-body">{pretty(props.response.headers)}</pre>}
+                {props.responseTab === "Headers" && <><div className="response-url"><code>Response headers</code><button className="icon-button" onClick={() => props.copy(pretty(props.response?.headers), "Response headers copied")} aria-label="Copy response headers"><Copy size={14} /></button></div><pre className="response-body">{pretty(props.response.headers)}</pre></>}
                 {props.responseTab === "Timing" && <div className="timing-view"><div><span>Round trip</span><strong>{props.response.elapsed_ms.toFixed(0)} ms</strong></div><div className="timing-track"><span style={{ width: `${Math.min(100, Math.max(4, props.response.elapsed_ms / 10))}%` }} /></div><p>Measured by the Plumbline UI around the live request.</p></div>}
               </> : <div className="response-empty"><div className="response-empty-icon"><Terminal size={20} /></div><strong>No response yet</strong><p>Send a request to inspect its status, body, headers, and timing.</p></div>}
             </section>
@@ -609,7 +637,8 @@ function ExplorerPage(props: {
 }
 
 function RunsPage(props: {
-  model: ApiModel | null; roles: string; setRoles: (value: string) => void; runBusy: boolean; runError: string; run: () => void;
+  model: ApiModel | null; target: string; authStatus: AuthStatus; authMode: AuthMode; openSettings: (type?: "target" | "auth") => void;
+  roles: string; setRoles: (value: string) => void; runBusy: boolean; runError: string; run: () => void;
   fixtures: string; setFixtures: (value: string) => void; discoverFixtures: boolean; setDiscoverFixtures: (value: boolean) => void;
   fixturesOpen: boolean; setFixturesOpen: (value: boolean) => void;
   scopeMode: "all" | "groups"; setScopeMode: (value: "all" | "groups") => void;
@@ -619,11 +648,14 @@ function RunsPage(props: {
   searchRef: React.RefObject<HTMLInputElement | null>; checkFilter: string; setCheckFilter: (value: string) => void;
   groupBy: "none" | "check" | "endpoint" | "cluster"; setGroupBy: (value: "none" | "check" | "endpoint" | "cluster") => void;
   activeCluster: string | null; setActiveCluster: (value: string | null) => void; findings: Finding[]; selectedId: string;
-  setSelectedId: (value: string) => void; selectedFinding: Finding | null; rowRefs: React.MutableRefObject<Record<string, HTMLTableRowElement | null>>;
+  setSelectedId: (value: string) => void; selectedFinding: Finding | null; rowRefs: React.MutableRefObject<Record<string, HTMLElement | null>>;
   copy: (value: string, message: string) => void;
 }) {
   const model = props.model;
   const [scopeQuery, setScopeQuery] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [runsView, setRunsView] = useState<"configuration" | "results">(props.report ? "results" : "configuration");
+  useEffect(() => { if (props.report) setRunsView("results"); }, [props.report?.run_id]);
   const operations = useMemo(() => new Map((model?.operations ?? []).map((operation) => [operation.id, operation])), [model]);
   const scopeGroups = useMemo(() => {
     const grouped = new Map<string, Operation[]>();
@@ -637,12 +669,14 @@ function RunsPage(props: {
     const query = scopeQuery.trim().toLocaleLowerCase();
     return query ? scopeGroups.filter(([name]) => name.toLocaleLowerCase().includes(query)) : scopeGroups;
   }, [scopeGroups, scopeQuery]);
-  const selectedScopeGroups = scopeGroups.filter(([name]) => props.selectedGroups.includes(name));
   const displayedScopeGroups = visibleScopeGroups.slice(0, 200);
-  const displayedSelectedGroups = selectedScopeGroups.slice(0, 30);
-  const selectedOperationCount = selectedScopeGroups.reduce((count, [, items]) => count + items.length, 0);
+  const selectedOperationCount = scopeGroups.filter(([name]) => props.selectedGroups.includes(name)).reduce((count, [, items]) => count + items.length, 0);
   const schemas = Object.entries(model?.schemas ?? {}).sort(([a], [b]) => a.localeCompare(b));
   const checks = [...new Set((props.report?.findings ?? []).map((finding) => finding.check))].sort();
+  const checkResults = checks.map((check) => {
+    const findings = (props.report?.findings ?? []).filter((finding) => finding.check === check);
+    return { check, fail: findings.filter((finding) => finding.status === "fail").length, inconclusive: findings.filter((finding) => finding.status === "inconclusive").length, pass: findings.filter((finding) => finding.status === "pass").length };
+  });
   const groups = useMemo(() => {
     if (props.groupBy === "none") return [{ key: "", label: "", findings: props.findings }];
     const grouped = new Map<string, Finding[]>();
@@ -659,54 +693,72 @@ function RunsPage(props: {
   }, [props.findings, props.groupBy, operations, props.summary]);
   const counts = props.summary?.counts ?? props.report?.summary ?? {};
   const missingFixtureCount = props.summary?.missing_fixture_inconclusive ?? 0;
+  const startedAt = props.report ? new Date(props.report.started_at).toLocaleString() : "";
+  const inconclusiveReasons = [...new Set((props.report?.findings ?? []).filter((finding) => finding.status === "inconclusive").map((finding) => finding.observed || "The check could not reach a conclusion."))]
+    .map((reason) => ({ reason, count: (props.report?.findings ?? []).filter((finding) => finding.status === "inconclusive" && (finding.observed || "The check could not reach a conclusion.") === reason).length }));
   return <section className="page runs-page">
-    <PageHeading subtitle="Choose which areas of the imported API to check, then review the evidence." />
+    <div className="runs-page-heading">
+      {runsView === "configuration" || !props.report ? <p>Run the whole contract, or pick the groups you changed.</p> : <div className="runs-heading-result"><div className="runs-meta"><span>Run <b>{props.report.run_id.slice(0, 10)}</b></span><span>Target <b>{props.report.base_url}</b></span><span>Started <b>{startedAt}</b></span><span>Scope <b>{props.summary?.operation_count ?? 0} operations</b></span></div><div className="run-result-actions"><button className="button button-secondary" onClick={() => setRunsView("configuration")}>Edit scope</button><a className="button button-secondary" href={`${API}/runs/${props.report.run_id}/report.html`} target="_blank" rel="noreferrer"><ArrowDownToLine size={14} />HTML report</a></div></div>}
+    </div>
     {!model ? <EmptyState title="Import an API before running checks" action="Go to import" /> : <>
+      <div className="runs-view-tabs" role="tablist" aria-label="Run analysis view">
+        <button role="tab" aria-selected={runsView === "configuration"} className={runsView === "configuration" ? "active" : ""} onClick={() => setRunsView("configuration")}>New run</button>
+        <button role="tab" aria-selected={runsView === "results"} className={runsView === "results" ? "active" : ""} onClick={() => props.report && setRunsView("results")} disabled={!props.report}>Results</button>
+      </div>
+      {runsView === "configuration" && <div className="run-config-stage">
+      <div className="run-session surface" aria-label="Run target">
+        <div className="run-session-kv"><span>API</span><strong>{model.title} <small>{model.version}</small></strong></div>
+        <div className="run-session-kv"><span>Target</span><strong className="mono">{props.target || "Not configured"}</strong></div>
+        <div className="run-session-kv"><span>Auth</span><strong><i className={`run-state-dot ${props.authStatus}`} />{props.authStatus === "set" ? `${props.authMode === "bearer" ? "Bearer token" : "API key"} set` : props.authStatus === "invalid" ? "Invalid" : "Missing"}</strong></div>
+        <div className="run-session-kv"><span>State-changing checks</span><strong><i className={`run-state-dot ${props.mutations ? "warn" : ""}`} />{props.mutations ? "On" : "Off, read-only run"}</strong></div>
+        <button className="button button-quiet run-session-settings" onClick={() => props.openSettings()}>Change in Settings</button>
+      </div>
+      {(!props.target || (model.operations.some((operation) => operation.security.length > 0) && props.authStatus !== "set")) && <div className="run-readiness"><AlertTriangle size={15} /><span>{!props.target ? "Choose a target before running checks." : "This contract has secured operations, but no session credential is set. Auth checks may be inconclusive."}</span><button className="link-button" onClick={() => props.openSettings(props.target ? "auth" : "target")}>{!props.target ? "Set target" : "Review auth"}<ArrowRight size={13} /></button></div>}
       <div className="run-config surface">
-        <div className="run-config-copy"><div className="heading-icon"><Settings2 size={16} /></div><div><strong>Run configuration</strong><span>Target, auth, and mutation mode are managed in Settings.</span></div><span className={`mutation-inline ${props.mutations ? "on" : "off"}`}>Mutations {props.mutations ? "On" : "Off"}</span></div>
-        <details className="run-scope-panel">
-          <summary><div><strong>Run scope</strong><span>{props.scopeMode === "all" ? `Entire API · ${model.operations.length} operations` : `${props.selectedGroups.length} groups · ${selectedOperationCount} operations`}</span></div><ChevronDown size={15} /></summary>
-          <section className="run-scope">
-          <div className="run-scope-heading"><div><strong>Choose coverage</strong><span>Run the whole contract or select groups from the document.</span></div><div className="scope-mode segmented"><button className={props.scopeMode === "all" ? "active" : ""} onClick={() => props.setScopeMode("all")}>Entire API <span>{model.operations.length}</span></button><button className={props.scopeMode === "groups" ? "active" : ""} onClick={() => props.setScopeMode("groups")}>Choose groups</button></div></div>
-          {props.scopeMode === "groups" && <div className="scope-picker">
-            <section className="scope-browser" aria-label="Operation groups">
-              <div className="scope-browser-toolbar"><label className="scope-search"><Search size={14} /><input aria-label="Search operation groups" value={scopeQuery} onChange={(event) => setScopeQuery(event.target.value)} placeholder="Search groups" />{scopeQuery && <button className="icon-button" onClick={() => setScopeQuery("")} aria-label="Clear group search"><X size={13} /></button>}</label><span>{visibleScopeGroups.length} matching groups</span></div>
-              <div className="scope-bulk-actions"><button className="text-button" onClick={() => props.setSelectedGroups([...new Set([...props.selectedGroups, ...visibleScopeGroups.map(([name]) => name)])])}>Select {scopeQuery ? "matching" : "all"}</button><button className="text-button" onClick={() => props.setSelectedGroups([])} disabled={!props.selectedGroups.length}>Clear selection</button></div>
-              <div className="scope-group-list">{displayedScopeGroups.map(([group, groupOperations]) => <label className="scope-group" key={group}><input type="checkbox" checked={props.selectedGroups.includes(group)} onChange={(event) => props.setSelectedGroups(event.target.checked ? [...props.selectedGroups, group] : props.selectedGroups.filter((item) => item !== group))} /><span className="scope-group-name">{group}</span><small>{groupOperations.length} {groupOperations.length === 1 ? "operation" : "operations"}</small></label>)}{visibleScopeGroups.length > displayedScopeGroups.length && <div className="scope-no-results">Showing {displayedScopeGroups.length} of {visibleScopeGroups.length}. Search to narrow the list.</div>}{!visibleScopeGroups.length && <div className="scope-no-results">No groups match “{scopeQuery}”.</div>}</div>
-            </section>
-            <aside className="scope-selection" aria-label="Selected operation groups"><div className="scope-selection-heading"><div><strong>Included in run</strong><span>{props.selectedGroups.length} groups · {selectedOperationCount} operations</span></div><span className="scope-selection-count">{selectedOperationCount}</span></div>{selectedScopeGroups.length ? <div className="scope-selected-list">{displayedSelectedGroups.map(([group, groupOperations]) => <div className="scope-selected-item" key={group}><div><strong>{group}</strong><span>{groupOperations.length} {groupOperations.length === 1 ? "operation" : "operations"}</span></div><button className="icon-button" onClick={() => props.setSelectedGroups(props.selectedGroups.filter((item) => item !== group))} aria-label={`Remove ${group}`}><X size={14} /></button></div>)}{selectedScopeGroups.length > displayedSelectedGroups.length && <p className="scope-more-selected">+ {selectedScopeGroups.length - displayedSelectedGroups.length} more groups. Search to manage them.</p>}</div> : <p className="scope-selection-empty">Choose groups from the list to define a focused run.</p>}</aside>
-          </div>}
+        <section className="run-scope">
+          <div className="run-scope-heading"><div><strong>What to check</strong><span>Run the whole contract, or pick the groups you changed.</span></div><div className="scope-mode segmented"><button aria-pressed={props.scopeMode === "all"} className={props.scopeMode === "all" ? "active" : ""} onClick={() => props.setScopeMode("all")}>Entire API <span>{model.operations.length}</span></button><button aria-pressed={props.scopeMode === "groups"} className={props.scopeMode === "groups" ? "active" : ""} onClick={() => props.setScopeMode("groups")}>Choose groups</button></div></div>
+          {props.scopeMode === "groups" ? <>
+            <div className="run-pick-tools"><label className="run-scope-search"><Search size={15} /><input aria-label="Search groups" value={scopeQuery} onChange={(event) => setScopeQuery(event.target.value)} placeholder="Search groups" /></label><div><button className="link-button" onClick={() => props.setSelectedGroups([...new Set([...props.selectedGroups, ...visibleScopeGroups.map(([name]) => name)])])}>Select {scopeQuery ? "matching" : "all"}</button><button className="link-button" onClick={() => props.setSelectedGroups([])} disabled={!props.selectedGroups.length}>Clear</button></div></div>
+            <div className="run-group-tiles">{displayedScopeGroups.map(([group, groupOperations]) => <label className="run-group-tile" key={group}><input type="checkbox" checked={props.selectedGroups.includes(group)} onChange={(event) => props.setSelectedGroups(event.target.checked ? [...props.selectedGroups, group] : props.selectedGroups.filter((item) => item !== group))} /><span>{group}</span><small>{groupOperations.length} {groupOperations.length === 1 ? "op" : "ops"}</small></label>)}</div>
+            {visibleScopeGroups.length > displayedScopeGroups.length && <p className="run-empty-groups">Showing {displayedScopeGroups.length} of {visibleScopeGroups.length}. Search to narrow the list.</p>}
+            {!visibleScopeGroups.length && <p className="run-empty-groups">No group matches that search.</p>}
+          </> : <div className="run-all-note">All {scopeGroups.length} groups and {model.operations.length} operations will run.</div>}
           </section>
-        </details>
-        <details className="contract-structure"><summary><span>Document schemas and relationships</span><small>{schemas.length} named schemas</small></summary>{schemas.length ? <div className="schema-table-wrap"><table className="schema-table"><thead><tr><th>SCHEMA</th><th>FIELDS</th><th>RELATIONSHIPS</th></tr></thead><tbody>{schemas.map(([name, schema]) => { const properties = schema.properties && typeof schema.properties === "object" ? Object.keys(schema.properties as Record<string, unknown>) : []; const relations = schemaRelations(schema); return <tr key={name}><th>{name}</th><td>{properties.length ? properties.map((field) => <code key={field}>{field}</code>) : <span className="muted">No named fields</span>}</td><td>{relations.length ? relations.map((relation) => <code key={relation}>{relation}</code>) : <span className="muted">No direct references</span>}</td></tr>; })}</tbody></table></div> : <p className="schema-empty">This document has no named component schemas to map.</p>}</details>
+        <details className="advanced-run-config" open={advancedOpen} onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}><summary><span>Advanced configuration <small>Fixtures and roles. Optional.</small></span><ChevronDown size={14} /></summary><div className="run-advanced-grid">
         <details id="fixtures-editor" className="run-options fixtures-options" open={props.fixturesOpen} onToggle={(event) => props.setFixturesOpen(event.currentTarget.open)}><summary><span>Path fixtures</span><small>Optional · replace generated path values with known resources</small></summary><label className="field-label" htmlFor="fixtures-json">PATH PARAMETER VALUES</label><textarea id="fixtures-json" className="roles-editor" value={props.fixtures} onChange={(event) => props.setFixtures(event.target.value)} placeholder={'{"id":"1","slug":"rose"}'} /><label className="discovery-toggle"><input type="checkbox" checked={props.discoverFixtures} onChange={(event) => props.setDiscoverFixtures(event.target.checked)} /><span><strong>Discover IDs from list responses</strong><small>Use the first item returned by a matching GET list operation. Off by default.</small></span></label></details>
         <details className="run-options"><summary><span>Role configurations</span><small>Optional · test operations with multiple access levels</small></summary><label className="field-label" htmlFor="role-config">CONFIGURATION JSON</label><textarea id="role-config" className="roles-editor" value={props.roles} onChange={(event) => props.setRoles(event.target.value)} placeholder={'[{"name":"viewer","token":"...","allowed_operation_ids":["list_items"]}]'} /><p>Provide role credentials and the operation IDs each role can access.</p></details>
+        <details className="contract-structure"><summary><span>Document schemas and relationships</span><small>{schemas.length} named schemas</small><ChevronDown size={14} /></summary>{schemas.length ? <div className="schema-table-wrap"><table className="schema-table"><thead><tr><th>SCHEMA</th><th>FIELDS</th><th>RELATIONSHIPS</th></tr></thead><tbody>{schemas.map(([name, schema]) => { const properties = schema.properties && typeof schema.properties === "object" ? Object.keys(schema.properties as Record<string, unknown>) : []; const relations = schemaRelations(schema); return <tr key={name}><th>{name}</th><td>{properties.length ? properties.map((field) => <code key={field}>{field}</code>) : <span className="muted">No named fields</span>}</td><td>{relations.length ? relations.map((relation) => <code key={relation}>{relation}</code>) : <span className="muted">No direct references</span>}</td></tr>; })}</tbody></table></div> : <p className="schema-empty">This document has no named component schemas to map.</p>}</details>
+        </div></details>
         {props.runError && <InlineMessage tone="error">{props.runError}</InlineMessage>}
-        <div className="run-config-actions"><span className="muted"><ShieldCheck size={13} />Mutation safety is controlled in Settings.</span><button className="button button-primary" onClick={props.run} disabled={props.runBusy || (props.scopeMode === "groups" && !props.selectedGroups.length)}>{props.runBusy ? <LoaderCircle size={14} className="spin" /> : <Play size={14} />}{props.runBusy ? "Running checks" : props.scopeMode === "all" ? `Run all ${model.operations.length} operations` : `Run ${selectedOperationCount} selected operations`}<ArrowRight size={14} /></button></div>
       </div>
-      {props.report && props.summary && <>
+      <div className="run-sticky-actions"><div><strong>{props.scopeMode === "all" ? `${scopeGroups.length} groups, ${model.operations.length} operations` : `${props.selectedGroups.length} groups, ${selectedOperationCount} operations`}</strong><span>{props.scopeMode === "all" ? "Entire API" : selectedOperationCount ? `Read-only checks against ${props.target || "No target configured"}` : "Choose at least one group to run."}</span></div><button className="button button-primary" onClick={props.run} disabled={props.runBusy || !props.target || (props.scopeMode === "groups" && !props.selectedGroups.length)}>{props.runBusy ? <LoaderCircle size={14} className="spin" /> : <Play size={14} />}{props.runBusy ? "Running checks" : "Run checks"}<ArrowRight size={14} /></button></div>
+      </div>}
+      {runsView === "results" && props.report && props.summary && <>
         <section className="run-overview">
           <div className="surface run-summary-card">
-            <div className="run-summary-heading"><div><div className="eyebrow">LATEST RUN · {props.report.run_id.slice(0, 10)}</div><h2>{props.summary.verdict}</h2></div><a className="button button-secondary" href={`${API}/runs/${props.report.run_id}/report.html`} target="_blank" rel="noreferrer"><ArrowDownToLine size={14} />HTML report</a></div>
-            <div className="run-kpis">
-              <div className="run-kpi kpi-fail"><span>Failed</span><strong>{counts.fail ?? 0}</strong></div>
-              <div className="run-kpi kpi-inconclusive"><span>Inconclusive</span><strong>{counts.inconclusive ?? 0}</strong></div>
-              <div className="run-kpi kpi-pass"><span>Passed</span><strong>{counts.pass ?? 0}</strong></div>
-            </div>
+            <h2 className="run-verdict">{props.summary.verdict}</h2>
+            <p className="run-verdict-sub">{counts.fail ?? 0} failed, {counts.inconclusive ?? 0} inconclusive, {counts.pass ?? 0} passed across {props.summary.operation_count} operations.</p>
             <StackedResultBar counts={counts} />
-            {missingFixtureCount > 0 && <div className="fixture-summary">{missingFixtureCount} inconclusive due to missing fixtures <a href="#fixtures-editor" onClick={(event) => { event.preventDefault(); props.setFixturesOpen(true); window.setTimeout(() => document.getElementById("fixtures-editor")?.scrollIntoView({ behavior: "smooth", block: "center" }), 0); }}>Configure fixtures</a></div>}
-            <details className="run-breakdown"><summary><span>Detailed breakdown</span><small>Severity and checks by result status</small><ChevronDown size={14} /></summary><div className="overview-grid"><div className="overview-card"><div className="card-label">SEVERITY × STATUS</div><p className="breakdown-note">Severity describes the potential impact of a check. Status shows whether this run passed or failed it.</p><SeverityMatrix matrix={props.summary.severity_status} /></div><div className="overview-card"><div className="card-label">FAILURES BY CHECK</div><CheckBars items={props.summary.failures_by_check} /></div></div></details>
+            <div className="run-status-legend">{(["fail", "inconclusive", "pass"] as const).map((status) => <button key={status} onClick={() => { props.setStatusFilter(status); props.setActiveCluster(null); document.getElementById("runs-findings")?.scrollIntoView({ behavior: "smooth", block: "start" }); }}><i className={`legend-dot ${status}`} />{statusLabel(status)} <b>{counts[status] ?? 0}</b></button>)}</div>
+            <div className="run-kpi-breakdown"><div><div className="card-label">SEVERITY × STATUS</div><p className="breakdown-note">Severity is potential impact. Status is this run's result.</p><SeverityMatrix matrix={props.summary.severity_status} /></div></div>
+            {missingFixtureCount > 0 && <div className="fixture-summary">{missingFixtureCount} inconclusive due to missing fixtures <button className="link-button" onClick={() => { setRunsView("configuration"); setAdvancedOpen(true); props.setFixturesOpen(true); window.setTimeout(() => document.getElementById("fixtures-editor")?.scrollIntoView({ behavior: "smooth", block: "center" }), 0); }}>Configure fixtures</button></div>}
           </div>
-          {props.summary.clusters.length > 0 && <div className="surface attention-card"><div className="section-heading"><div><div className="eyebrow">PRIORITIZED TRIAGE</div><h3>Needs attention</h3></div><span className="attention-count">{props.summary.clusters.length} clusters</span></div><div className="cluster-grid">{props.summary.clusters.map((cluster) => <button key={cluster.cluster_key} className={`cluster-card ${props.activeCluster === cluster.cluster_key ? "selected" : ""}`} onClick={() => { props.setActiveCluster(props.activeCluster === cluster.cluster_key ? null : cluster.cluster_key); props.setStatusFilter("fail"); }}><div className="cluster-top"><SeverityBadge severity={cluster.severity} /><span className="cluster-count">{cluster.count} findings</span></div><strong>{cluster.check}</strong><p>{cluster.observed || cluster.expected}</p><div className="cluster-endpoints">{cluster.sample_endpoints.map((endpoint) => <code key={`${cluster.cluster_key}:${endpoint.operation_id}`}>{endpoint.method} {endpoint.path}</code>)}</div></button>)}</div></div>}
+          <div className="run-result-columns">
+            <div className="run-result-priorities">
+              {props.summary.clusters.length > 0 && <section className="surface run-result-panel"><h2>Needs attention</h2><p className="lead">{props.summary.clusters.reduce((sum, cluster) => sum + cluster.count, 0)} failures across {props.summary.clusters.length} causes. Start with the first.</p><ul className="run-cluster-list">{props.summary.clusters.map((cluster) => <li key={cluster.cluster_key}><button className="run-cluster-row" onClick={() => { props.setActiveCluster(cluster.cluster_key); props.setStatusFilter("fail"); document.getElementById("runs-findings")?.scrollIntoView({ behavior: "smooth", block: "start" }); }}><span className="run-result-icon fail" /><span className="run-cluster-copy"><strong>{cluster.observed || cluster.title}</strong><small>{cluster.check} · {cluster.sample_endpoints.slice(0, 2).map((endpoint) => `${endpoint.method ?? ""} ${endpoint.path}`).join(" · ")}</small></span><span className="run-cluster-count">{cluster.count} <small>{cluster.count === 1 ? "finding" : "findings"}</small></span></button></li>)}</ul></section>}
+              {inconclusiveReasons.length > 0 && <section className="surface run-result-panel"><h2>Why some results are inconclusive</h2><p className="lead">The check could not decide. Review the evidence for each reason.</p><ul className="run-cluster-list">{inconclusiveReasons.map(({ reason, count }) => <li key={reason}><button className="run-cluster-row" onClick={() => { props.setStatusFilter("inconclusive"); props.setActiveCluster(null); document.getElementById("runs-findings")?.scrollIntoView({ behavior: "smooth", block: "start" }); }}><span className="run-result-icon inconclusive" /><span className="run-cluster-copy"><strong>{reason}</strong><small>{reason.toLowerCase().includes("fixture") ? "Add a real path value in Advanced configuration." : "Open a finding below to inspect its request and response evidence."}</small></span><span className="run-cluster-count">{count}</span></button></li>)}</ul></section>}
+            </div>
+            <section className="surface run-result-panel run-by-check"><h2>By check</h2><p className="lead">Results for each type of check.</p><div className="run-check-list">{checkResults.length ? checkResults.map((item) => { const total = item.fail + item.inconclusive + item.pass; return <div className="run-check-item" key={item.check}><span>{item.check}</span><div className="run-check-bar">{item.fail > 0 && <i className="fail" style={{ flex: item.fail }} />}{item.inconclusive > 0 && <i className="inconclusive" style={{ flex: item.inconclusive }} />}{item.pass > 0 && <i className="pass" style={{ flex: item.pass }} />}</div><b>{item.fail} failed</b><small>{total} results</small></div>; }) : <p className="run-empty-state">No checks in this run.</p>}</div></section>
+          </div>
         </section>
-        <section className="triage-section surface">
-          <div className="triage-heading"><div><div className="eyebrow">FINDINGS</div><h2>Review and filter</h2></div><div className="keyboard-hint"><kbd>j</kbd><kbd>k</kbd> move <kbd>Enter</kbd> inspect <kbd>/</kbd> search</div></div>
-          <div className="triage-filters"><div className="segmented">{(["all", "fail", "inconclusive", "pass"] as const).map((status) => <button key={status} className={props.statusFilter === status ? "active" : ""} onClick={() => { props.setStatusFilter(status); props.setActiveCluster(null); }}>{status === "all" ? "All" : statusLabel(status)}<span>{status === "all" ? props.report?.findings.length ?? 0 : counts[status] ?? 0}</span></button>)}</div><label className="search-control finding-search"><Search size={14} /><input ref={props.searchRef} value={props.search} onChange={(event) => props.setSearch(event.target.value)} placeholder="Search operation id or path" /><kbd>/</kbd></label><select value={props.checkFilter} onChange={(event) => props.setCheckFilter(event.target.value)} aria-label="Filter by check"><option value="all">All checks</option>{checks.map((check) => <option key={check}>{check}</option>)}</select><select value={props.groupBy} onChange={(event) => props.setGroupBy(event.target.value as typeof props.groupBy)} aria-label="Group findings"><option value="none">No grouping</option><option value="check">Group by check</option><option value="endpoint">Group by endpoint</option><option value="cluster">Group by cluster</option></select>{props.activeCluster && <button className="button button-quiet clear-cluster" onClick={() => props.setActiveCluster(null)}><X size={13} />Clear cluster</button>}</div>
-          <div className="findings-layout"><div className="findings-table-wrap"><table className="findings-table"><thead><tr><th>STATUS</th><th>SEVERITY</th><th>OPERATION</th><th>CHECK</th><th>VARIANT</th></tr></thead><tbody>{groups.flatMap((group) => [
-            ...(props.groupBy !== "none" ? [<tr className="group-row" key={`group:${group.key}`}><td colSpan={5}>{group.label} <span>{group.findings.length}</span></td></tr>] : []),
-            ...group.findings.map((finding) => <tr key={finding.id} tabIndex={0} ref={(node) => { props.rowRefs.current[finding.id] = node; }} className={`finding-row ${props.selectedId === finding.id ? "selected" : ""}`} onClick={() => props.setSelectedId(finding.id)} onKeyDown={(event) => { if (event.key === "Enter") props.setSelectedId(finding.id); }}><td><StatusBadge status={finding.status} label={statusLabel(finding.status)} /></td><td>{finding.status === "pass" ? null : <SeverityBadge severity={finding.severity} />}</td><td><code>{finding.operation_id ?? "API"}</code><span className="row-path">{operations.get(finding.operation_id ?? "")?.path}</span></td><td>{finding.check}</td><td>{finding.variant ?? ""}</td></tr>),
-          ])}{!props.findings.length && <tr><td colSpan={5} className="empty-cell">No findings match these filters.</td></tr>}</tbody></table></div>
-            <aside className="finding-detail" aria-label="Finding detail">{props.selectedFinding ? <FindingDetail finding={props.selectedFinding} operation={operations.get(props.selectedFinding.operation_id ?? "")} copy={props.copy} /> : <div className="detail-empty"><Search size={18} /><span>Select a finding to inspect evidence.</span></div>}</aside>
+        <section className="triage-section surface" id="runs-findings">
+          <div className="triage-heading"><div><h2>Findings</h2><p>Select a row to see the evidence.</p></div><div className="keyboard-hint"><kbd>j</kbd><kbd>k</kbd> move <kbd>/</kbd> search</div></div>
+          <div className="triage-filters"><div className="segmented">{(["all", "fail", "inconclusive", "pass"] as const).map((status) => <button key={status} aria-pressed={props.statusFilter === status} className={props.statusFilter === status ? "active" : ""} onClick={() => { props.setStatusFilter(status); props.setActiveCluster(null); }}>{status === "all" ? "All" : statusLabel(status)}<span>{status === "all" ? props.report?.findings.length ?? 0 : counts[status] ?? 0}</span></button>)}</div><label className="search-control finding-search"><Search size={14} /><input ref={props.searchRef} value={props.search} onChange={(event) => props.setSearch(event.target.value)} placeholder="Search operation or path" /><kbd>/</kbd></label><select value={props.checkFilter} onChange={(event) => props.setCheckFilter(event.target.value)} aria-label="Filter by check"><option value="all">All checks</option>{checks.map((check) => <option key={check}>{check}</option>)}</select><select value={props.groupBy} onChange={(event) => props.setGroupBy(event.target.value as typeof props.groupBy)} aria-label="Group findings"><option value="none">No grouping</option><option value="check">Group by check</option><option value="endpoint">Group by endpoint</option><option value="cluster">Group by cluster</option></select>{props.activeCluster && <button className="button button-quiet clear-cluster" onClick={() => props.setActiveCluster(null)}><X size={13} />Clear cluster</button>}</div>
+          <div className="run-findings-split"><div className="run-finding-list">{groups.flatMap((group) => [
+            ...(props.groupBy !== "none" ? [<div className="run-list-group" key={`group:${group.key}`}>{group.label}<span>{group.findings.length}</span></div>] : []),
+            ...group.findings.map((finding) => <button key={finding.id} type="button" ref={(node) => { props.rowRefs.current[finding.id] = node; }} aria-current={props.selectedId === finding.id} className="run-finding-row" onClick={() => props.setSelectedId(finding.id)}><span className={`run-result-icon ${finding.status}`} aria-label={statusLabel(finding.status)} /><span className="run-finding-copy"><strong>{finding.operation_id ?? "API"}</strong><code>{operations.get(finding.operation_id ?? "")?.method} {operations.get(finding.operation_id ?? "")?.path}</code></span><span className="run-finding-meta"><span>{finding.check}</span>{finding.variant && <span>{finding.variant}</span>}{finding.status !== "pass" && <SeverityBadge severity={finding.severity} />}</span></button>),
+          ])}{!props.findings.length && <div className="run-list-empty">No findings match these filters.</div>}</div>
+            <aside className="finding-detail" aria-label="Finding detail">{props.selectedFinding ? <FindingDetail finding={props.selectedFinding} operation={operations.get(props.selectedFinding.operation_id ?? "")} copy={props.copy} configureFixtures={() => { setRunsView("configuration"); setAdvancedOpen(true); props.setFixturesOpen(true); window.setTimeout(() => document.getElementById("fixtures-editor")?.scrollIntoView({ behavior: "smooth", block: "center" }), 0); }} /> : <div className="detail-empty"><Search size={18} /><span>Select a finding to inspect evidence.</span></div>}</aside>
           </div>
         </section>
       </>}
@@ -753,21 +805,16 @@ function SeverityBadge({ severity }: { severity: string }) { return <span classN
 
 function StackedResultBar({ counts }: { counts: Record<string, number> }) {
   const total = (counts.pass ?? 0) + (counts.fail ?? 0) + (counts.inconclusive ?? 0);
-  return <div className="stacked-result" role="img" aria-label={`Pass ${counts.pass ?? 0}, fail ${counts.fail ?? 0}, inconclusive ${counts.inconclusive ?? 0}`}>{total > 0 && <><span className="pass-segment" style={{ width: `${(counts.pass ?? 0) * 100 / total}%` }} /><span className="fail-segment" style={{ width: `${(counts.fail ?? 0) * 100 / total}%` }} /><span className="inconclusive-segment" style={{ width: `${(counts.inconclusive ?? 0) * 100 / total}%` }} /></>}</div>;
+  return <div className="stacked-result" role="img" aria-label={`Fail ${counts.fail ?? 0}, inconclusive ${counts.inconclusive ?? 0}, pass ${counts.pass ?? 0}`}>{total > 0 && <><span className="fail-segment" style={{ width: `${(counts.fail ?? 0) * 100 / total}%` }} /><span className="inconclusive-segment" style={{ width: `${(counts.inconclusive ?? 0) * 100 / total}%` }} /><span className="pass-segment" style={{ width: `${(counts.pass ?? 0) * 100 / total}%` }} /></>}</div>;
 }
 
 function SeverityMatrix({ matrix }: { matrix: Record<string, Record<string, number>> }) {
   return <table className="severity-matrix"><thead><tr><th></th><th>Fail</th><th>Inconcl.</th><th>Pass</th></tr></thead><tbody>{["high", "medium", "low", "info"].map((severity) => <tr key={severity}><th>{severity}</th><td className={(matrix[severity]?.fail ?? 0) ? "fail-text" : ""}>{matrix[severity]?.fail ?? 0}</td><td className={(matrix[severity]?.inconclusive ?? 0) ? "warn-text" : ""}>{matrix[severity]?.inconclusive ?? 0}</td><td className={(matrix[severity]?.pass ?? 0) ? "pass-text" : ""}>{matrix[severity]?.pass ?? 0}</td></tr>)}</tbody></table>;
 }
 
-function CheckBars({ items }: { items: { check: string; count: number }[] }) {
-  const max = Math.max(1, ...items.map((item) => item.count));
-  return <div className="check-bars">{items.length ? items.map((item) => <div className="check-bar-row" key={item.check}><span>{item.check}</span><div><i style={{ width: `${item.count * 100 / max}%` }} /></div><strong>{item.count}</strong></div>) : <div className="empty-inline">No failed checks.</div>}
-  </div>;
-}
-
-function FindingDetail({ finding, operation, copy }: { finding: Finding; operation?: Operation; copy: (value: string, message: string) => void }) {
-  return <><div className="detail-top"><div><StatusBadge status={finding.status} label={statusLabel(finding.status)} />{finding.status !== "pass" && <SeverityBadge severity={finding.severity} />}</div><button className="icon-button" onClick={() => copy(pretty(finding), "Finding copied")} aria-label="Copy finding"><Copy size={14} /></button></div><h3>{finding.check}<span> / {finding.operation_id ?? "API"}</span></h3><div className="detail-endpoint"><MethodBadge method={operation?.method ?? "API"} /><code>{operation?.path ?? finding.operation_id ?? "API"}</code>{finding.variant && <span className="variant-label">Variant: {finding.variant}</span>}</div><div className="expect-observe"><section><span>EXPECTED</span><p>{finding.expected || "No expectation recorded."}</p></section><section><span>OBSERVED</span><p>{finding.observed || "No observation recorded."}</p></section></div><EvidencePanel title="REQUEST EVIDENCE" evidence={finding.request} /><EvidencePanel title="RESPONSE EVIDENCE" evidence={finding.response} /><div className="curl-panel"><div><span className="eyebrow">REPRODUCE</span><button className="button button-quiet" onClick={() => copy(curlFor(finding), "Curl command copied")}><Clipboard size={13} />Copy curl</button></div><pre>{curlFor(finding)}</pre></div></>;
+function FindingDetail({ finding, operation, copy, configureFixtures }: { finding: Finding; operation?: Operation; copy: (value: string, message: string) => void; configureFixtures: () => void }) {
+  const fixtureNeeded = finding.status === "inconclusive" && `${finding.expected} ${finding.observed}`.toLowerCase().includes("fixture");
+  return <><div className="detail-top"><div><StatusBadge status={finding.status} label={statusLabel(finding.status)} />{finding.status !== "pass" && <SeverityBadge severity={finding.severity} />}</div><button className="icon-button" onClick={() => copy(pretty(finding), "Finding copied")} aria-label="Copy finding"><Copy size={14} /></button></div><h3>{finding.check}<span> / {finding.operation_id ?? "API"}</span></h3><div className="detail-endpoint"><MethodBadge method={operation?.method ?? "API"} /><code>{operation?.path ?? finding.operation_id ?? "API"}</code>{finding.variant && <span className="variant-label">Variant: {finding.variant}</span>}</div><div className="expect-observe"><section><span>EXPECTED</span><p>{finding.expected || "No expectation recorded."}</p></section><section><span>OBSERVED</span><p>{finding.observed || "No observation recorded."}</p></section></div>{fixtureNeeded && <div className="finding-next-step"><div><strong>Try this next</strong><span>Provide a real value for this path parameter, then rerun the scoped check.</span></div><button className="button button-secondary" onClick={configureFixtures}>Open fixtures <ArrowRight size={13} /></button></div>}<EvidencePanel title="REQUEST EVIDENCE" evidence={finding.request} /><EvidencePanel title="RESPONSE EVIDENCE" evidence={finding.response} /><div className="curl-panel"><div><span className="eyebrow">REPRODUCE</span><button className="button button-quiet" onClick={() => copy(curlFor(finding), "Curl command copied")}><Clipboard size={13} />Copy curl</button></div><pre>{curlFor(finding)}</pre></div></>;
 }
 
 function EvidencePanel({ title, evidence }: { title: string; evidence?: Evidence | null }) {
