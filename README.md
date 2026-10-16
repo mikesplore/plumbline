@@ -43,12 +43,12 @@ The demo API includes one clean endpoint and seeded contract and behavior defect
 
 ## MCP server
 
-The MCP server reads an OpenAPI file at startup and creates one tool for each operation. The target base URL is required explicitly. State-changing tools are disabled unless `--allow-mutations` is passed.
+The MCP server reads the contract imported into Plumbline and exposes one tool for each operation. Refreshing the tools in an MCP client reloads the saved contract, so importing a new OpenAPI document changes the available tools without restarting the MCP service. The target base URL is required explicitly. State-changing tools are disabled unless `--allow-mutations` is passed.
 
 ```sh
 uv run python -m plumbline.mcp_server \
-  --spec demo_api/openapi.json \
-  --base-url http://127.0.0.1:8001
+  --spec path/to/openapi.yaml \
+  --base-url https://api.example.com
 ```
 
 Use `--token TOKEN` to pass a bearer or header API key credential. In the Explorer, provide the local spec file path and target URL to generate a Claude Desktop or Cursor configuration snippet.
@@ -61,8 +61,8 @@ The server supports two authentication methods for `/mcp`: direct HTTP Basic aut
 
 ```sh
 uv run python -m plumbline.mcp_server \
-  --spec demo_api/openapi.json \
-  --base-url http://127.0.0.1:8001 \
+  --spec path/to/openapi.yaml \
+  --base-url https://api.example.com \
   --transport http \
   --client-id myid \
   --client-secret mysecret
@@ -76,7 +76,7 @@ For Docker Compose, the bundled `mcp` service publishes port `8765` and already 
 docker compose up --build mcp
 ```
 
-The Compose service reads `MCP_CLIENT_ID` and `MCP_CLIENT_SECRET` from the environment. These values are not taken from `.env.example` automatically, so verify the active configuration with `docker compose config` and use the same credentials in your MCP client. For a reverse-proxy deployment, set `PLUMBLINE_PUBLIC_URL` to the public HTTPS origin, such as `https://mcp.example.com`. Set `PLUMBLINE_OAUTH_REDIRECT_URIS` to a comma-separated list of approved OAuth callback URLs when a client uses a callback other than Claude's default.
+The Compose service reads the latest imported contract from `.plumbline/current-openapi.txt`. Import a contract in the Plumbline workbench, then refresh the tools in Claude, Gemini, or another MCP client. The service reads `MCP_CLIENT_ID` and `MCP_CLIENT_SECRET` from the environment. These values are not taken from `.env.example` automatically, so verify the active configuration with `docker compose config` and use the same credentials in your MCP client. For a reverse-proxy deployment, set `PLUMBLINE_PUBLIC_URL` to the public HTTPS origin, such as `https://mcp.example.com`. Set `PLUMBLINE_OAUTH_REDIRECT_URIS` to a comma-separated list of approved OAuth callback URLs when a client uses a callback other than Claude's default.
 
 The server publishes OAuth discovery metadata at `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource/mcp`. These endpoints allow clients to discover `/authorize` and `/token` automatically. Each Streamable HTTP session keeps its own token state, so `set_auth_token` is not shared between concurrent clients.
 

@@ -13,7 +13,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, urlencode
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 import httpx
 import jsonschema
@@ -24,7 +24,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolRequestParams, CallToolResult, ListToolsResult, TextContent, Tool
 
 from plumbline.models import ApiModel, Operation
-from plumbline.parser import parse_openapi
+from plumbline.parser import SpecValidationError, parse_openapi
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
@@ -91,6 +91,10 @@ def _unique_names(api_model: ApiModel) -> dict[str, Operation]:
     return result
 
 
+def _empty_api_model() -> ApiModel:
+    return ApiModel(title="Plumbline MCP", version="0.1.0")
+
+
 def _auth_headers(operation: Operation, api_model: ApiModel, token: str | None) -> dict[str, str]:
     if not token:
         return {}
@@ -131,10 +135,27 @@ def create_server(
     base_url: str,
     token: str | None = None,
     allow_mutations: bool = False,
+    spec_path: Path | None = None,
 ) -> Server:
     """Create an MCP server whose tools map directly to contract operations."""
     fallback_token_state = _TokenState(token)
-    tools_by_name = _unique_names(api_model)
+    current_model = api_model
+    current_mtime: int | None = None
+
+    def refresh_model() -> ApiModel:
+        nonlocal current_model, current_mtime
+        if spec_path is None:
+            return current_model
+        try:
+            mtime = spec_path.stat().st_mtime_ns
+            if mtime == current_mtime:
+                return current_model
+            loaded_model = parse_openapi(spec_path.read_text(encoding="utf-8"))
+        except (OSError, SpecValidationError):
+            return current_model
+        current_model = loaded_model
+        current_mtime = mtime
+        return current_model
 
     auth_tool = Tool(
         name="set_auth_token",
@@ -153,6 +174,8 @@ def create_server(
     )
 
     async def list_tools(_context, _params) -> ListToolsResult:
+        loaded_model = refresh_model()
+        tools_by_name = _unique_names(loaded_model)
         return ListToolsResult(tools=[auth_tool] + [
             Tool(
                 name=name,
@@ -163,6 +186,8 @@ def create_server(
         ])
 
     async def call_tool(_context, params: CallToolRequestParams) -> CallToolResult:
+        loaded_model = refresh_model()
+        tools_by_name = _unique_names(loaded_model)
         name = params.name
         arguments = params.arguments or {}
         token_state = _session_token_state(_context, fallback_token_state)
@@ -197,7 +222,7 @@ def create_server(
 
         try:
             url, query = _request_url(base_url, operation, arguments)
-            headers = _auth_headers(operation, api_model, token_state.token)
+            headers = _auth_headers(operation, loaded_model, token_state.token)
             for parameter in operation.parameters:
                 if parameter.get("in") == "header" and parameter.get("name") in arguments:
                     headers[parameter["name"]] = str(arguments[parameter["name"]])
@@ -236,14 +261,25 @@ async def _run(args: argparse.Namespace) -> None:
         except (ValueError, UnicodeError, binascii.Error) as exc:
             raise SystemExit(f"Invalid encoded API model: {exc}") from exc
     else:
-        spec_text = Path(args.spec).read_text(encoding="utf-8")
-        api_model = parse_openapi(spec_text)
+        spec_path = Path(args.spec)
+        if spec_path.is_file():
+            api_model = parse_openapi(spec_path.read_text(encoding="utf-8"))
+        elif args.transport == "http":
+            api_model = _empty_api_model()
+        else:
+            raise SystemExit(f"OpenAPI spec does not exist: {spec_path}")
     token = args.token
     if args.token_env:
         token = os.environ.get(args.token_env)
         if token is None:
             raise SystemExit(f"Environment variable {args.token_env} is not set")
-    server = create_server(api_model, args.base_url, token, args.allow_mutations)
+    server = create_server(
+        api_model,
+        args.base_url,
+        token,
+        args.allow_mutations,
+        spec_path=Path(args.spec) if args.transport == "http" and args.spec else None,
+    )
     if args.transport == "http":
         await _run_http(server, args)
     else:
@@ -287,6 +323,19 @@ async def _run_http(server: Server, args: argparse.Namespace) -> None:
     authorization_codes: dict[str, dict[str, str | float]] = {}
     access_tokens: dict[str, float] = {}
 
+    def redirect_uri_allowed(redirect_uri: str) -> bool:
+        if redirect_uri in redirect_uris:
+            return True
+        parsed = urlparse(redirect_uri)
+        return (
+            parsed.scheme == "https"
+            and parsed.netloc == "oauth-redirect.googleusercontent.com"
+            and parsed.path.startswith("/r/")
+            and len(parsed.path) > 3
+            and not parsed.query
+            and not parsed.fragment
+        )
+
     def public_origin(request: Request) -> str:
         configured = args.public_url or os.environ.get("PLUMBLINE_PUBLIC_URL")
         if configured:
@@ -297,7 +346,7 @@ async def _run_http(server: Server, args: argparse.Namespace) -> None:
 
     def oauth_error(request: Request, error: str, description: str) -> RedirectResponse | JSONResponse:
         redirect_uri = request.query_params.get("redirect_uri")
-        if redirect_uri and redirect_uri in redirect_uris:
+        if redirect_uri and redirect_uri_allowed(redirect_uri):
             params = {"error": error, "error_description": description}
             if request.query_params.get("state"):
                 params["state"] = request.query_params["state"]
@@ -311,7 +360,7 @@ async def _run_http(server: Server, args: argparse.Namespace) -> None:
         if query.get("client_id") != client_id:
             return oauth_error(request, "unauthorized_client", "Unknown client_id")
         redirect_uri = query.get("redirect_uri", "")
-        if redirect_uri not in redirect_uris:
+        if not redirect_uri_allowed(redirect_uri):
             return oauth_error(request, "invalid_request", "The redirect_uri is not registered")
         if query.get("code_challenge_method") != "S256" or not query.get("code_challenge"):
             return oauth_error(request, "invalid_request", "PKCE with S256 is required")
@@ -332,6 +381,18 @@ async def _run_http(server: Server, args: argparse.Namespace) -> None:
         form = {key: values[-1] for key, values in body.items() if values}
         if form.get("grant_type") != "authorization_code":
             return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.startswith("Basic "):
+            try:
+                credentials = base64.b64decode(auth_header[6:]).decode("utf-8")
+                basic_client_id, basic_client_secret = credentials.split(":", 1)
+            except (ValueError, UnicodeError, binascii.Error):
+                return JSONResponse({"error": "invalid_client"}, status_code=401)
+            if not secrets.compare_digest(basic_client_id, client_id) or not secrets.compare_digest(basic_client_secret, client_secret):
+                return JSONResponse({"error": "invalid_client"}, status_code=401)
+            form["client_id"] = basic_client_id
+        elif form.get("client_secret") is not None and not secrets.compare_digest(str(form["client_secret"]), client_secret):
+            return JSONResponse({"error": "invalid_client"}, status_code=401)
         code = str(form.get("code", ""))
         record = authorization_codes.pop(code, None)
         if not record or float(record["expires_at"]) < time.time():
@@ -350,6 +411,7 @@ async def _run_http(server: Server, args: argparse.Namespace) -> None:
             "access_token": access_token,
             "token_type": "Bearer",
             "expires_in": 3600,
+            "scope": str(form.get("scope", "mcp")),
         })
 
     async def authorization_metadata(request: Request):
@@ -361,6 +423,8 @@ async def _run_http(server: Server, args: argparse.Namespace) -> None:
             "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code"],
             "code_challenge_methods_supported": ["S256"],
+            "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+            "scopes_supported": ["mcp"],
         })
 
     async def protected_resource_metadata(request: Request):
@@ -404,7 +468,7 @@ async def _run_http(server: Server, args: argparse.Namespace) -> None:
                 response = JSONResponse(
                     {"detail": "Invalid client credentials"},
                     status_code=401,
-                    headers={"WWW-Authenticate": "Basic"},
+                    headers={"WWW-Authenticate": 'Bearer, Basic realm="mcp"'},
                 )
                 await response(scope, receive, send)
                 return
@@ -416,7 +480,7 @@ async def _run_http(server: Server, args: argparse.Namespace) -> None:
                 response = JSONResponse(
                     {"detail": "Invalid client credentials"},
                     status_code=401,
-                    headers={"WWW-Authenticate": "Basic"},
+                    headers={"WWW-Authenticate": 'Bearer, Basic realm="mcp"'},
                 )
                 await response(scope, receive, send)
                 return
@@ -425,7 +489,7 @@ async def _run_http(server: Server, args: argparse.Namespace) -> None:
                 response = JSONResponse(
                     {"detail": "Invalid client credentials"},
                     status_code=401,
-                    headers={"WWW-Authenticate": "Basic"},
+                    headers={"WWW-Authenticate": 'Bearer, Basic realm="mcp"'},
                 )
                 await response(scope, receive, send)
                 return
