@@ -7,3 +7,15 @@ services:
       - ./runs:/app/runs
       - ./.plumbline:/app/.plumbline
     restart: unless-stopped
+
+  mcp:
+    build: .
+    ports:
+      - "8765:8765"
+    depends_on:
+      - backend
+    environment:
+      - PLUMBLINE_MCP_CLIENT_ID=${MCP_CLIENT_ID:-myid}
+      - PLUMBLINE_MCP_CLIENT_SECRET=${MCP_CLIENT_SECRET:-mysecret}
+    command: uv run --no-sync python -m plumbline.mcp_server --spec demo_api/openapi.json --base-url http://backend:8000 --transport http --host 0.0.0.0 --port 8765
+    restart: unless-stopped
