@@ -3,13 +3,17 @@
 import argparse
 import asyncio
 import base64
+import binascii
+import hashlib
 import json
 import os
 import re
+import secrets
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlencode
 
 import httpx
 import jsonschema
@@ -197,6 +201,8 @@ def create_server(
             for parameter in operation.parameters:
                 if parameter.get("in") == "header" and parameter.get("name") in arguments:
                     headers[parameter["name"]] = str(arguments[parameter["name"]])
+            if operation.request_schema is not None and "body" in arguments:
+                headers["Content-Type"] = "application/json"
             request_kwargs: dict[str, Any] = {"params": query, "headers": headers}
             if operation.request_schema is not None and "body" in arguments:
                 request_kwargs["json"] = arguments["body"]
@@ -227,7 +233,7 @@ async def _run(args: argparse.Namespace) -> None:
             encoded_model = "".join(args.model_base64)
             model_json = base64.urlsafe_b64decode(encoded_model.encode("ascii"))
             api_model = ApiModel.model_validate_json(model_json)
-        except (ValueError, UnicodeError) as exc:
+        except (ValueError, UnicodeError, binascii.Error) as exc:
             raise SystemExit(f"Invalid encoded API model: {exc}") from exc
     else:
         spec_text = Path(args.spec).read_text(encoding="utf-8")
@@ -250,15 +256,11 @@ async def _run(args: argparse.Namespace) -> None:
 
 
 async def _run_http(server: Server, args: argparse.Namespace) -> None:
-    """Serve over Streamable HTTP, guarded by client id/secret basic auth."""
-    import base64 as _b64
-    import secrets
+    """Serve Streamable HTTP with Basic auth and OAuth authorization-code login."""
 
     from starlette.applications import Starlette
-    from starlette.middleware import Middleware
-    from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.requests import Request
-    from starlette.responses import JSONResponse, Response
+    from starlette.responses import JSONResponse, RedirectResponse
     from starlette.routing import Route
 
     client_id = (
@@ -274,22 +276,100 @@ async def _run_http(server: Server, args: argparse.Namespace) -> None:
     if not client_id or not client_secret:
         raise SystemExit("--transport http requires --client-id and --client-secret (or PLUMBLINE_MCP_CLIENT_ID / PLUMBLINE_MCP_CLIENT_SECRET)")
 
-    def _unauthorized() -> Response:
-        return JSONResponse({"detail": "Invalid client credentials"}, status_code=401, headers={"WWW-Authenticate": "Basic"})
+    redirect_uris = {
+        item.strip()
+        for item in os.environ.get(
+            "PLUMBLINE_OAUTH_REDIRECT_URIS",
+            "https://claude.ai/api/mcp/auth_callback",
+        ).split(",")
+        if item.strip()
+    }
+    authorization_codes: dict[str, dict[str, str | float]] = {}
+    access_tokens: dict[str, float] = {}
 
-    class ClientAuthMiddleware(BaseHTTPMiddleware):
-        async def dispatch(self, request: Request, call_next):
-            header = request.headers.get("authorization", "")
-            if not header.startswith("Basic "):
-                return _unauthorized()
-            try:
-                decoded = _b64.b64decode(header[6:]).decode("utf-8")
-                presented_id, presented_secret = decoded.split(":", 1)
-            except (ValueError, UnicodeError):
-                return _unauthorized()
-            if not secrets.compare_digest(presented_id, client_id) or not secrets.compare_digest(presented_secret, client_secret):
-                return _unauthorized()
-            return await call_next(request)
+    def public_origin(request: Request) -> str:
+        configured = args.public_url or os.environ.get("PLUMBLINE_PUBLIC_URL")
+        if configured:
+            return configured.rstrip("/")
+        forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+        forwarded_host = request.headers.get("x-forwarded-host", request.headers.get("host", ""))
+        return f"{forwarded_proto}://{forwarded_host}".rstrip("/")
+
+    def oauth_error(request: Request, error: str, description: str) -> RedirectResponse | JSONResponse:
+        redirect_uri = request.query_params.get("redirect_uri")
+        if redirect_uri and redirect_uri in redirect_uris:
+            params = {"error": error, "error_description": description}
+            if request.query_params.get("state"):
+                params["state"] = request.query_params["state"]
+            return RedirectResponse(f"{redirect_uri}?{urlencode(params)}", status_code=302)
+        return JSONResponse({"error": error, "error_description": description}, status_code=400)
+
+    async def authorize(request: Request):
+        query = request.query_params
+        if query.get("response_type") != "code":
+            return oauth_error(request, "unsupported_response_type", "Only response_type=code is supported")
+        if query.get("client_id") != client_id:
+            return oauth_error(request, "unauthorized_client", "Unknown client_id")
+        redirect_uri = query.get("redirect_uri", "")
+        if redirect_uri not in redirect_uris:
+            return oauth_error(request, "invalid_request", "The redirect_uri is not registered")
+        if query.get("code_challenge_method") != "S256" or not query.get("code_challenge"):
+            return oauth_error(request, "invalid_request", "PKCE with S256 is required")
+        code = secrets.token_urlsafe(32)
+        authorization_codes[code] = {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "code_challenge": query["code_challenge"],
+            "expires_at": time.time() + 300,
+        }
+        params = {"code": code}
+        if query.get("state"):
+            params["state"] = query["state"]
+        return RedirectResponse(f"{redirect_uri}?{urlencode(params)}", status_code=302)
+
+    async def token(request: Request):
+        body = parse_qs((await request.body()).decode("utf-8"))
+        form = {key: values[-1] for key, values in body.items() if values}
+        if form.get("grant_type") != "authorization_code":
+            return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+        code = str(form.get("code", ""))
+        record = authorization_codes.pop(code, None)
+        if not record or float(record["expires_at"]) < time.time():
+            return JSONResponse({"error": "invalid_grant"}, status_code=400)
+        if str(form.get("client_id", "")) != record["client_id"]:
+            return JSONResponse({"error": "invalid_grant"}, status_code=400)
+        if str(form.get("redirect_uri", "")) != record["redirect_uri"]:
+            return JSONResponse({"error": "invalid_grant"}, status_code=400)
+        verifier = str(form.get("code_verifier", ""))
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+        if not verifier or not secrets.compare_digest(challenge, str(record["code_challenge"])):
+            return JSONResponse({"error": "invalid_grant"}, status_code=400)
+        access_token = secrets.token_urlsafe(32)
+        access_tokens[access_token] = time.time() + 3600
+        return JSONResponse({
+            "access_token": access_token,
+            "token_type": "Bearer",
+            "expires_in": 3600,
+        })
+
+    async def authorization_metadata(request: Request):
+        origin = public_origin(request)
+        return JSONResponse({
+            "issuer": origin,
+            "authorization_endpoint": f"{origin}/authorize",
+            "token_endpoint": f"{origin}/token",
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code"],
+            "code_challenge_methods_supported": ["S256"],
+        })
+
+    async def protected_resource_metadata(request: Request):
+        origin = public_origin(request)
+        return JSONResponse({
+            "resource": f"{origin}/mcp",
+            "authorization_servers": [origin],
+            "scopes_supported": ["mcp"],
+        })
 
     session_manager = StreamableHTTPSessionManager(
         app=server,
@@ -298,19 +378,77 @@ async def _run_http(server: Server, args: argparse.Namespace) -> None:
     )
     streamable_http_app = StreamableHTTPASGIApp(session_manager)
 
-    async def handle_mcp(request) -> Response:
-        await streamable_http_app(request.scope, request.receive, request._send)
-        return Response()
+    class ClientAuthMiddleware:
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] != "http":
+                await self.app(scope, receive, send)
+                return
+
+            headers_dict = dict(scope.get("headers", []))
+            auth_header = headers_dict.get(b"authorization", b"").decode("utf-8", errors="ignore")
+
+            if scope.get("path") != "/mcp":
+                await self.app(scope, receive, send)
+                return
+
+            if auth_header.startswith("Bearer "):
+                bearer = auth_header[7:].strip()
+                if bearer in access_tokens and access_tokens[bearer] >= time.time():
+                    await self.app(scope, receive, send)
+                    return
+
+            if not auth_header.startswith("Basic "):
+                response = JSONResponse(
+                    {"detail": "Invalid client credentials"},
+                    status_code=401,
+                    headers={"WWW-Authenticate": "Basic"},
+                )
+                await response(scope, receive, send)
+                return
+
+            try:
+                decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
+                presented_id, presented_secret = decoded.split(":", 1)
+            except (ValueError, UnicodeError, binascii.Error):
+                response = JSONResponse(
+                    {"detail": "Invalid client credentials"},
+                    status_code=401,
+                    headers={"WWW-Authenticate": "Basic"},
+                )
+                await response(scope, receive, send)
+                return
+
+            if not secrets.compare_digest(presented_id, client_id) or not secrets.compare_digest(presented_secret, client_secret):
+                response = JSONResponse(
+                    {"detail": "Invalid client credentials"},
+                    status_code=401,
+                    headers={"WWW-Authenticate": "Basic"},
+                )
+                await response(scope, receive, send)
+                return
+
+            await self.app(scope, receive, send)
 
     @asynccontextmanager
     async def lifespan(app):
         async with session_manager.run():
             yield
 
+    authenticated_app = ClientAuthMiddleware(streamable_http_app)
+
     starlette_app = Starlette(
-        routes=[Route("/mcp", handle_mcp, methods=["GET", "POST", "DELETE"])],
+        routes=[
+            Route("/.well-known/oauth-authorization-server", endpoint=authorization_metadata, methods=["GET"]),
+            Route("/.well-known/oauth-protected-resource", endpoint=protected_resource_metadata, methods=["GET"]),
+            Route("/.well-known/oauth-protected-resource/mcp", endpoint=protected_resource_metadata, methods=["GET"]),
+            Route("/authorize", endpoint=authorize, methods=["GET"]),
+            Route("/token", endpoint=token, methods=["POST"]),
+            Route("/mcp", endpoint=authenticated_app, methods=["GET", "POST", "DELETE"]),
+        ],
         lifespan=lifespan,
-        middleware=[Middleware(ClientAuthMiddleware)],
     )
 
     import uvicorn
@@ -318,7 +456,7 @@ async def _run_http(server: Server, args: argparse.Namespace) -> None:
     host = args.host
     port = args.port
     config = uvicorn.Config(starlette_app, host=host, port=port, log_level="info")
-    print(f"Plumbline MCP HTTP server on http://{host}:{port}/mcp (client credentials required)")
+    print(f"Plumbline MCP HTTP server on http://{host}:{port}/mcp (Basic auth and OAuth supported)")
     await uvicorn.Server(config).serve()
 
 
@@ -338,6 +476,7 @@ def main() -> None:
     parser.add_argument("--transport", choices=["stdio", "http"], default="stdio", help="Transport to serve on (default: stdio)")
     parser.add_argument("--client-id", help="Client ID for HTTP transport basic auth (or PLUMBLINE_MCP_CLIENT_ID)")
     parser.add_argument("--client-secret", help="Client secret for HTTP transport basic auth (or PLUMBLINE_MCP_CLIENT_SECRET)")
+    parser.add_argument("--public-url", help="Public HTTPS origin used in OAuth metadata (or PLUMBLINE_PUBLIC_URL)")
     parser.add_argument("--host", default="127.0.0.1", help="HTTP bind host (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8765, help="HTTP bind port (default: 8765)")
     args = parser.parse_args()

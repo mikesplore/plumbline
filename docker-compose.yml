@@ -17,5 +17,7 @@ services:
     environment:
       - PLUMBLINE_MCP_CLIENT_ID=${MCP_CLIENT_ID:-myid}
       - PLUMBLINE_MCP_CLIENT_SECRET=${MCP_CLIENT_SECRET:-mysecret}
+      - PLUMBLINE_PUBLIC_URL=${PLUMBLINE_PUBLIC_URL:-}
+      - PLUMBLINE_OAUTH_REDIRECT_URIS=${PLUMBLINE_OAUTH_REDIRECT_URIS:-https://claude.ai/api/mcp/auth_callback}
     command: uv run --no-sync python -m plumbline.mcp_server --spec demo_api/openapi.json --base-url http://backend:8000 --transport http --host 0.0.0.0 --port 8765
     restart: unless-stopped

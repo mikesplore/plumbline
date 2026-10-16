@@ -55,7 +55,9 @@ Use `--token TOKEN` to pass a bearer or header API key credential. In the Explor
 
 ### HTTP transport for remote agents
 
-To expose the MCP server over Streamable HTTP so remote agents such as Claude web can connect, pass `--transport http` together with `--client-id` and `--client-secret`. The server binds uvicorn on `--host`/`--port` (default `127.0.0.1:8765`) and serves `POST /mcp`. All requests require HTTP Basic auth over `client_id:client_secret`; missing or wrong credentials return `401` with `WWW-Authenticate: Basic`. Alternatively set `PLUMBLINE_MCP_CLIENT_ID` and `PLUMBLINE_MCP_CLIENT_SECRET`.
+To expose the MCP server over Streamable HTTP, start it with `--transport http` and provide client credentials. The server listens on `--host` and `--port` (default `127.0.0.1:8765`) and exposes the MCP endpoint at `POST /mcp`.
+
+The server supports two authentication methods for `/mcp`: direct HTTP Basic authentication with the configured client ID and secret, or an OAuth bearer token issued by this server. Requests without valid credentials return `401 Unauthorized`. Basic-auth credentials come from `--client-id` and `--client-secret`, or from `PLUMBLINE_MCP_CLIENT_ID` and `PLUMBLINE_MCP_CLIENT_SECRET`.
 
 ```sh
 uv run python -m plumbline.mcp_server \
@@ -66,7 +68,17 @@ uv run python -m plumbline.mcp_server \
   --client-secret mysecret
 ```
 
-Point a remote client at `http://<host>:<port>/mcp` with an `Authorization: Basic <base64(client_id:client_secret)>` header. Each SSE session holds its own token state, so `set_auth_token` persists within one remote agent session and is not shared across concurrent clients.
+Point a remote MCP client at `https://<host>/mcp`. Configure it to use Streamable HTTP. OAuth-capable clients can discover the authorization and token endpoints automatically; clients that support direct credentials can send an `Authorization: Basic <base64(client_id:client_secret)>` header. Do not use the server root (`/`), `/api/mcp`, or the legacy `/sse` endpoint.
+
+For Docker Compose, the bundled `mcp` service publishes port `8765` and already uses `/mcp`:
+
+```sh
+docker compose up --build mcp
+```
+
+The Compose service reads `MCP_CLIENT_ID` and `MCP_CLIENT_SECRET` from the environment. These values are not taken from `.env.example` automatically, so verify the active configuration with `docker compose config` and use the same credentials in your MCP client. For a reverse-proxy deployment, set `PLUMBLINE_PUBLIC_URL` to the public HTTPS origin, such as `https://mcp.example.com`. Set `PLUMBLINE_OAUTH_REDIRECT_URIS` to a comma-separated list of approved OAuth callback URLs when a client uses a callback other than Claude's default.
+
+The server publishes OAuth discovery metadata at `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource/mcp`. These endpoints allow clients to discover `/authorize` and `/token` automatically. Each Streamable HTTP session keeps its own token state, so `set_auth_token` is not shared between concurrent clients.
 
 ## Checks and reports
 
