@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import re
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -14,6 +15,8 @@ import httpx
 import jsonschema
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
+from mcp.server.streamable_http_manager import StreamableHTTPASGIApp, StreamableHTTPSessionManager
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolRequestParams, CallToolResult, ListToolsResult, TextContent, Tool
 
 from plumbline.models import ApiModel, Operation
@@ -27,6 +30,18 @@ class _TokenState:
 
     def __init__(self, initial: str | None = None) -> None:
         self.token = initial
+
+
+def _session_token_state(context: Any, fallback: _TokenState) -> _TokenState:
+    """Resolve the token store for a call: per-connection state on HTTP, shared on stdio."""
+    connection = getattr(getattr(context, "session", None), "_connection", None)
+    if connection is None:
+        return fallback
+    state = connection.state.get("plumbline_token_state")
+    if not isinstance(state, _TokenState):
+        state = _TokenState(fallback.token)
+        connection.state["plumbline_token_state"] = state
+    return state
 
 
 def _tool_name(operation_id: str) -> str:
@@ -114,7 +129,7 @@ def create_server(
     allow_mutations: bool = False,
 ) -> Server:
     """Create an MCP server whose tools map directly to contract operations."""
-    token_state = _TokenState(token)
+    fallback_token_state = _TokenState(token)
     tools_by_name = _unique_names(api_model)
 
     auth_tool = Tool(
@@ -146,6 +161,7 @@ def create_server(
     async def call_tool(_context, params: CallToolRequestParams) -> CallToolResult:
         name = params.name
         arguments = params.arguments or {}
+        token_state = _session_token_state(_context, fallback_token_state)
         if name == "set_auth_token":
             token_value = arguments.get("token")
             if not isinstance(token_value, str) or not token_value:
@@ -222,12 +238,80 @@ async def _run(args: argparse.Namespace) -> None:
         if token is None:
             raise SystemExit(f"Environment variable {args.token_env} is not set")
     server = create_server(api_model, args.base_url, token, args.allow_mutations)
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            server.create_initialization_options(),
-        )
+    if args.transport == "http":
+        await _run_http(server, args)
+    else:
+        async with stdio_server() as (read_stream, write_stream):
+            await server.run(
+                read_stream,
+                write_stream,
+                server.create_initialization_options(),
+            )
+
+
+async def _run_http(server: Server, args: argparse.Namespace) -> None:
+    """Serve over Streamable HTTP, guarded by client id/secret basic auth."""
+    import base64 as _b64
+    import secrets
+
+    from starlette.applications import Starlette
+    from starlette.middleware import Middleware
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse, Response
+    from starlette.routing import Route
+
+    client_id = args.client_id or os.environ.get("PLUMBLINE_MCP_CLIENT_ID")
+    client_secret = args.client_secret or os.environ.get("PLUMBLINE_MCP_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        raise SystemExit("--transport http requires --client-id and --client-secret (or PLUMBLINE_MCP_CLIENT_ID / PLUMBLINE_MCP_CLIENT_SECRET)")
+
+    def _unauthorized() -> Response:
+        return JSONResponse({"detail": "Invalid client credentials"}, status_code=401, headers={"WWW-Authenticate": "Basic"})
+
+    class ClientAuthMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            header = request.headers.get("authorization", "")
+            if not header.startswith("Basic "):
+                return _unauthorized()
+            try:
+                decoded = _b64.b64decode(header[6:]).decode("utf-8")
+                presented_id, presented_secret = decoded.split(":", 1)
+            except (ValueError, UnicodeError):
+                return _unauthorized()
+            if not secrets.compare_digest(presented_id, client_id) or not secrets.compare_digest(presented_secret, client_secret):
+                return _unauthorized()
+            return await call_next(request)
+
+    session_manager = StreamableHTTPSessionManager(
+        app=server,
+        json_response=True,
+        security_settings=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
+    streamable_http_app = StreamableHTTPASGIApp(session_manager)
+
+    async def handle_mcp(request) -> Response:
+        await streamable_http_app(request.scope, request.receive, request._send)
+        return Response()
+
+    @asynccontextmanager
+    async def lifespan(app):
+        async with session_manager.run():
+            yield
+
+    starlette_app = Starlette(
+        routes=[Route("/mcp", handle_mcp, methods=["GET", "POST", "DELETE"])],
+        lifespan=lifespan,
+        middleware=[Middleware(ClientAuthMiddleware)],
+    )
+
+    import uvicorn
+
+    host = args.host
+    port = args.port
+    config = uvicorn.Config(starlette_app, host=host, port=port, log_level="info")
+    print(f"Plumbline MCP HTTP server on http://{host}:{port}/mcp (client credentials required)")
+    await uvicorn.Server(config).serve()
 
 
 def main() -> None:
@@ -243,6 +327,11 @@ def main() -> None:
     parser.add_argument("--token", help="Bearer or header API key token for secured operations")
     parser.add_argument("--token-env", help="Read the token from this environment variable")
     parser.add_argument("--allow-mutations", action="store_true", help="Enable non-GET operations")
+    parser.add_argument("--transport", choices=["stdio", "http"], default="stdio", help="Transport to serve on (default: stdio)")
+    parser.add_argument("--client-id", help="Client ID for HTTP transport basic auth (or PLUMBLINE_MCP_CLIENT_ID)")
+    parser.add_argument("--client-secret", help="Client secret for HTTP transport basic auth (or PLUMBLINE_MCP_CLIENT_SECRET)")
+    parser.add_argument("--host", default="127.0.0.1", help="HTTP bind host (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=8765, help="HTTP bind port (default: 8765)")
     args = parser.parse_args()
     asyncio.run(_run(args))
 
