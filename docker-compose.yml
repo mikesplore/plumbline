@@ -1,0 +1,9 @@
+services:
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./runs:/app/runs
+      - ./.plumbline:/app/.plumbline
+    restart: unless-stopped

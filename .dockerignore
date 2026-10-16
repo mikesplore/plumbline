@@ -1,0 +1,11 @@
+.git
+.venv
+frontend
+.pytest_cache
+__pycache__
+*.py[cod]
+runs
+.plumbline
+demos
+tests
+.github

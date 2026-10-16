@@ -22,6 +22,13 @@ from plumbline.parser import parse_openapi
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
+class _TokenState:
+    """Mutable token storage shared across all tool calls in one server session."""
+
+    def __init__(self, initial: str | None = None) -> None:
+        self.token = initial
+
+
 def _tool_name(operation_id: str) -> str:
     name = re.sub(r"[^a-zA-Z0-9_-]", "_", operation_id)
     if not name or not name[0].isalpha():
@@ -107,9 +114,27 @@ def create_server(
     allow_mutations: bool = False,
 ) -> Server:
     """Create an MCP server whose tools map directly to contract operations."""
+    token_state = _TokenState(token)
     tools_by_name = _unique_names(api_model)
+
+    auth_tool = Tool(
+        name="set_auth_token",
+        description=(
+            "Set the bearer or header API key token used by subsequent tool calls. "
+            "The token persists for the rest of the server session."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "token": {"type": "string", "description": "Bearer token or API key value"}
+            },
+            "required": ["token"],
+            "additionalProperties": False,
+        },
+    )
+
     async def list_tools(_context, _params) -> ListToolsResult:
-        return ListToolsResult(tools=[
+        return ListToolsResult(tools=[auth_tool] + [
             Tool(
                 name=name,
                 description=f"{operation.method} {operation.path}: {operation.summary}".strip(),
@@ -121,6 +146,17 @@ def create_server(
     async def call_tool(_context, params: CallToolRequestParams) -> CallToolResult:
         name = params.name
         arguments = params.arguments or {}
+        if name == "set_auth_token":
+            token_value = arguments.get("token")
+            if not isinstance(token_value, str) or not token_value:
+                return CallToolResult(
+                    content=[TextContent(type="text", text="token must be a non-empty string")],
+                    isError=True,
+                )
+            token_state.token = token_value
+            return CallToolResult(
+                content=[TextContent(type="text", text="Token saved. It will be used for subsequent tool calls.")]
+            )
         operation = tools_by_name.get(name)
         if operation is None:
             return CallToolResult(
@@ -141,7 +177,7 @@ def create_server(
 
         try:
             url, query = _request_url(base_url, operation, arguments)
-            headers = _auth_headers(operation, api_model, token)
+            headers = _auth_headers(operation, api_model, token_state.token)
             for parameter in operation.parameters:
                 if parameter.get("in") == "header" and parameter.get("name") in arguments:
                     headers[parameter["name"]] = str(arguments[parameter["name"]])
