@@ -53,6 +53,21 @@ uv run python -m plumbline.mcp_server \
 
 Use `--token TOKEN` to pass a bearer or header API key credential. In the Explorer, provide the local spec file path and target URL to generate a Claude Desktop or Cursor configuration snippet.
 
+### HTTP transport for remote agents
+
+To expose the MCP server over Streamable HTTP so remote agents such as Claude web can connect, pass `--transport http` together with `--client-id` and `--client-secret`. The server binds uvicorn on `--host`/`--port` (default `127.0.0.1:8765`) and serves `POST /mcp`. All requests require HTTP Basic auth over `client_id:client_secret`; missing or wrong credentials return `401` with `WWW-Authenticate: Basic`. Alternatively set `PLUMBLINE_MCP_CLIENT_ID` and `PLUMBLINE_MCP_CLIENT_SECRET`.
+
+```sh
+uv run python -m plumbline.mcp_server \
+  --spec demo_api/openapi.json \
+  --base-url http://127.0.0.1:8001 \
+  --transport http \
+  --client-id myid \
+  --client-secret mysecret
+```
+
+Point a remote client at `http://<host>:<port>/mcp` with an `Authorization: Basic <base64(client_id:client_secret)>` header. Each SSE session holds its own token state, so `set_auth_token` persists within one remote agent session and is not shared across concurrent clients.
+
 ## Checks and reports
 
 Run checks from the Runs screen or submit a `POST /api/runs` request with a JSON body such as:
