@@ -261,8 +261,16 @@ async def _run_http(server: Server, args: argparse.Namespace) -> None:
     from starlette.responses import JSONResponse, Response
     from starlette.routing import Route
 
-    client_id = args.client_id or os.environ.get("PLUMBLINE_MCP_CLIENT_ID")
-    client_secret = args.client_secret or os.environ.get("PLUMBLINE_MCP_CLIENT_SECRET")
+    client_id = (
+        args.client_id
+        or os.environ.get("PLUMBLINE_MCP_CLIENT_ID")
+        or os.environ.get("MCP_CLIENT_ID")
+    )
+    client_secret = (
+        args.client_secret
+        or os.environ.get("PLUMBLINE_MCP_CLIENT_SECRET")
+        or os.environ.get("MCP_CLIENT_SECRET")
+    )
     if not client_id or not client_secret:
         raise SystemExit("--transport http requires --client-id and --client-secret (or PLUMBLINE_MCP_CLIENT_ID / PLUMBLINE_MCP_CLIENT_SECRET)")
 
