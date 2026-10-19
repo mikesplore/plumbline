@@ -6,6 +6,7 @@ services:
     volumes:
       - ./runs:/app/runs
       - ./.plumbline:/app/.plumbline
+    command: uv run --no-sync uvicorn plumbline.main:app --app-dir backend --host 0.0.0.0 --port 8000
     restart: unless-stopped
 
   mcp:

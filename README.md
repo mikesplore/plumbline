@@ -76,6 +76,23 @@ For Docker Compose, the bundled `mcp` service publishes port `8765` and already 
 docker compose up --build mcp
 ```
 
+The default Docker image command starts both the Plumbline web API on port `8000` and
+the MCP server on port `8765`. Set `MCP_BASE_URL` to the API that MCP should call,
+then run the image with the directory containing the imported contract mounted:
+
+```sh
+docker run --rm \
+  -p 8000:8000 -p 8765:8765 \
+  -v "$PWD/.plumbline:/app/.plumbline:ro" \
+  -e MCP_BASE_URL=https://api.example.com \
+  -e PLUMBLINE_MCP_CLIENT_ID=myid \
+  -e PLUMBLINE_MCP_CLIENT_SECRET=mysecret \
+  plumbline-mcp
+```
+
+MCP clients must connect to `http://<host>:8765/mcp`; the server root (`/`) is not
+an MCP endpoint.
+
 The Compose service reads the latest imported contract from `.plumbline/current-openapi.txt`. Import a contract in the Plumbline workbench, then refresh the tools in Claude, Gemini, or another MCP client. The service reads `MCP_CLIENT_ID` and `MCP_CLIENT_SECRET` from the environment. These values are not taken from `.env.example` automatically, so verify the active configuration with `docker compose config` and use the same credentials in your MCP client. For a reverse-proxy deployment, set `PLUMBLINE_PUBLIC_URL` to the public HTTPS origin, such as `https://mcp.example.com`. Set `PLUMBLINE_OAUTH_REDIRECT_URIS` to a comma-separated list of approved OAuth callback URLs when a client uses a callback other than Claude's default.
 
 The server publishes OAuth discovery metadata at `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource/mcp`. These endpoints allow clients to discover `/authorize` and `/token` automatically. Each Streamable HTTP session keeps its own token state, so `set_auth_token` is not shared between concurrent clients.
